@@ -24,6 +24,12 @@ def _prepare_libmpv_path() -> None:
 def main() -> int:
     _prepare_libmpv_path()
 
+    if "--diag" in sys.argv:  # 지원용: 창을 띄우지 않고 구성 정보만 출력
+        from . import __version__
+        from .tools import find_ffmpeg
+        print(f"Rumi {__version__}\nffmpeg: {find_ffmpeg()}")
+        return 0
+
     from PySide6.QtWidgets import QApplication, QMessageBox
 
     from . import APP_NAME

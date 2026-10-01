@@ -16,6 +16,20 @@ Windows, macOS, Linux에서 동작합니다 (Python + Qt(PySide6) + libmpv).
 - 오디오 트랙 선택, 배속(0.1~4배), A-B 구간 반복, 프레임 단위 이동, 화면 비율, 스크린샷
 - 전체화면(컨트롤 자동 숨김), 항상 위, 최근 파일, URL 스트림 열기
 
+### PIP (화면 속 화면)
+- **화면 → PIP → PIP로 파일 열기**(Ctrl+P): 메인 영상 위에 작은 영상 창을 최대 4개까지 띄웁니다.
+  제목 줄을 끌어 옮기고, 오른쪽 아래 모서리로 크기를 바꿉니다. 소리는 기본으로 꺼져 있습니다.
+- PIP마다 **동기화**를 켜면 메인 영상과 같은 시각으로 재생·정지·탐색·배속이 맞춰집니다. 끄면 따로 재생합니다.
+- **블랙박스 뒤 카메라 자동 PIP**를 켜면, 앞 카메라 영상을 열 때 짝이 되는 뒤 카메라 파일을
+  (`..._F` ↔ `..._R`, `Front` ↔ `Rear` 폴더 등) 찾아 동기화된 PIP로 띄웁니다.
+
+### 구간 잘라 이어 보기
+- 재생 중 **I** 키로 시작점, **O** 키로 끝점을 찍으면 **구간 목록**(F10)에 추가됩니다. 여러 영상의 구간을 모을 수 있습니다.
+- 목록에서 끌어서 순서를 바꾸고 **이어서 재생**하면 구간만 차례로 재생합니다. 목록은 `.rumiclips` 파일로 저장/열기 할 수 있습니다.
+- **파일로 내보내기**: 이어 붙인 결과를 MP4 하나로 저장합니다.
+  - 정확하게(권장): 프레임 단위로 자르고 다시 인코딩합니다. 해상도가 다른 영상도 섞을 수 있습니다.
+  - 빠르게: 원본을 그대로 잘라 붙여 매우 빠르지만 경계가 1~2초 어긋날 수 있습니다.
+
 ### 라이브러리와 중복 정리
 1. **라이브러리 → 폴더 추가**로 동영상 폴더를 등록하면 하위 폴더까지 스캔합니다.
 2. **중복 정리 → 중복 찾기**: 파일 이름이 달라도 *내용이 완전히 같은* 파일을 찾습니다.
@@ -40,6 +54,8 @@ Windows, macOS, Linux에서 동작합니다 (Python + Qt(PySide6) + libmpv).
 | L | A-B 구간 반복 | S | 스크린샷(바탕화면) |
 | V | 자막 보이기 | Z / X | 자막 싱크 ±0.1초 |
 | F9 | 재생목록 | Ctrl + L / Ctrl + D | 라이브러리 / 중복 정리 |
+| I / O | 구간 시작점 / 끝점 | F10 | 구간 목록 |
+| Ctrl + P | PIP로 파일 열기 | | |
 
 ## 개발 환경에서 실행
 
@@ -59,13 +75,13 @@ pytest            # 라이브러리/중복 정리 로직 테스트
 
 | OS | 명령 | 결과 |
 |---|---|---|
-| Windows | `python packaging/build.py` 다음 `iscc packaging\windows\rumi.iss` | `dist/RumiSetup-0.1.2.exe` (시작 메뉴, 파일 연결 선택) |
+| Windows | `python packaging/build.py` 다음 `iscc packaging\windows\rumi.iss` | `dist/RumiSetup-0.2.0.exe` (시작 메뉴, 파일 연결 선택) |
 | macOS | `python packaging/build.py` | `dist/Rumi.app` |
 | Linux | `python packaging/build.py` | `dist/Rumi/Rumi` |
 
 Windows에서는 `libmpv-2.dll`을 `packaging/windows/` 아래 아무 곳에 두거나, `RUMI_LIBMPV` 환경 변수로 경로를 지정하세요.
 
-각 OS에서 직접 빌드하지 않아도 됩니다. GitHub의 **Actions → build → Run workflow**를 실행하면(또는 `v0.1.2` 같은 태그를 푸시하면) 세 OS용 설치 파일이 한 번에 만들어집니다.
+각 OS에서 직접 빌드하지 않아도 됩니다. GitHub의 **Actions → build → Run workflow**를 실행하면(또는 `v0.2.0` 같은 태그를 푸시하면) 세 OS용 설치 파일이 한 번에 만들어집니다.
 
 ## 데이터 위치
 

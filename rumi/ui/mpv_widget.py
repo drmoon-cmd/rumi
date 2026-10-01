@@ -84,6 +84,7 @@ class MpvWidget(QOpenGLWidget):
         )
         self._render_ctx: mpv.MpvRenderContext | None = None
         self.software_rendering = False
+        self._pending_load: tuple[str, dict] | None = None
         self.gl_renderer = ""
         self.compat_mode = False
         self._quality_defaults = {}
@@ -136,6 +137,10 @@ class MpvWidget(QOpenGLWidget):
         if self.software_rendering:
             self.set_compat_mode(True)
         self.renderer_ready.emit()
+        if self._pending_load is not None:
+            path, options = self._pending_load
+            self._pending_load = None
+            self.player.loadfile(path, **options)
         self._render_ctx = mpv.MpvRenderContext(
             self.player, "opengl",
             opengl_init_params={"get_proc_address": self._proc_fn},
@@ -154,6 +159,14 @@ class MpvWidget(QOpenGLWidget):
                 "fbo": self.defaultFramebufferObject(),
             },
         )
+
+    def load(self, path: str, **options) -> None:
+        """파일 열기. 렌더 컨텍스트가 만들어지기 전에 열면 영상 출력 초기화가 실패하므로,
+        위젯이 처음 그려질 때까지 미뤘다가 연다."""
+        if self._render_ctx is None:
+            self._pending_load = (path, options)
+        else:
+            self.player.loadfile(path, **options)
 
     def set_compat_mode(self, on: bool) -> None:
         """호환 모드: 가벼운 스케일러로 그래픽 부담을 줄인다 (화면이 깨지거나 검게 나올 때)."""

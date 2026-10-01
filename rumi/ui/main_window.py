@@ -6,7 +6,7 @@ import os
 import platform
 from pathlib import Path
 
-from PySide6.QtCore import QSettings, QStandardPaths, Qt, QTimer, qVersion
+from PySide6.QtCore import QPoint, QSettings, QStandardPaths, Qt, QTimer, qVersion
 from PySide6.QtGui import QAction, QActionGroup, QKeySequence
 from PySide6.QtWidgets import (
     QApplication, QDockWidget, QFileDialog, QInputDialog, QMainWindow, QMessageBox, QWidget,
@@ -19,6 +19,11 @@ from .controls import ControlBar
 from .library_window import LibraryWindow
 from ..subtitles import looks_like_sensor_data
 from .mpv_widget import DEFAULT_HWDEC, HWDEC_MODES, MpvWidget
+from ..clips import Clip
+from ..dashcam import find_partner
+from ..tools import find_ffmpeg
+from .clips_panel import ClipsPanel
+from .pip import MAX_PIPS, PipView
 from .playlist import PlaylistPanel
 from .util import fmt_time
 
@@ -45,7 +50,9 @@ SHORTCUT_HELP = """
 <tr><td><b>V</b></td><td>자막 보이기 / 숨기기</td></tr>
 <tr><td><b>Z / X</b></td><td>자막 싱크 -0.1초 / +0.1초</td></tr>
 <tr><td><b>S</b></td><td>스크린샷 (바탕화면)</td></tr>
-<tr><td><b>F9</b></td><td>재생목록</td></tr>
+<tr><td><b>F9 / F10</b></td><td>재생목록 / 구간 목록</td></tr>
+<tr><td><b>I / O</b></td><td>구간 시작점 / 끝점(구간 추가)</td></tr>
+<tr><td><b>Ctrl + P</b></td><td>PIP로 파일 열기</td></tr>
 <tr><td><b>Ctrl + L</b></td><td>라이브러리 / 중복 정리</td></tr>
 </table>
 """
@@ -82,6 +89,9 @@ class VideoArea(QWidget):
         self.video.setGeometry(0, 0, w, h if self.overlay else max(h - ch, 0))
         self.controls.setGeometry(0, h - ch, w, ch)
         self.controls.raise_()
+        for pip in self.findChildren(PipView):
+            pip.move_within_parent(pip.pos())
+            pip.raise_()
 
 
 class MainWindow(QMainWindow):
@@ -101,6 +111,9 @@ class MainWindow(QMainWindow):
         self._tracks: list = []
         self._data_sub_checked = False
         self._hwdec = DEFAULT_HWDEC
+        self._pips: list[PipView] = []
+        self._clip_index: int | None = None   # 구간 이어 재생 중이면 현재 구간 번호
+        self._mark_in: tuple[str, float] | None = None
 
         self.video = MpvWidget()
         self.player = self.video.player
@@ -113,12 +126,22 @@ class MainWindow(QMainWindow):
         self.dock.setObjectName("playlist")
         self.dock.setWidget(self.playlist)
         self.addDockWidget(Qt.RightDockWidgetArea, self.dock)
+        self.clips_panel = ClipsPanel()
+        self.clips_dock = QDockWidget("구간 목록", self)
+        self.clips_dock.setObjectName("clips")
+        self.clips_dock.setWidget(self.clips_panel)
+        self.addDockWidget(Qt.RightDockWidgetArea, self.clips_dock)
+        self.tabifyDockWidget(self.dock, self.clips_dock)
+        self.dock.raise_()
 
         self._hide_timer = QTimer(self, singleShot=True, interval=CONTROLS_HIDE_MS)
         self._hide_timer.timeout.connect(self._auto_hide_controls)
         self._save_timer = QTimer(self, interval=5000)
         self._save_timer.timeout.connect(self._save_position)
         self._save_timer.start()
+        self._sync_timer = QTimer(self, interval=500)
+        self._sync_timer.timeout.connect(self._sync_pips)
+        self._sync_timer.start()
 
         self._build_actions()
         self._build_menus()
@@ -181,7 +204,14 @@ class MainWindow(QMainWindow):
         self.a_exit_full = A("전체화면 해제", lambda: self.isFullScreen() and self.toggle_fullscreen(), "Esc")
         self.a_ontop = A("항상 위", self.toggle_on_top, "Ctrl+T", checkable=True)
         self.a_screenshot = A("스크린샷", self.screenshot, "S")
-        self.a_playlist = A("재생목록", lambda: self.dock.setVisible(not self.dock.isVisible()), "F9")
+        self.a_playlist = A("재생목록", lambda: self._toggle_dock(self.dock), "F9")
+        self.a_clips = A("구간 목록", lambda: self._toggle_dock(self.clips_dock), "F10")
+        self.a_mark_in = A("구간 시작점 찍기", self.mark_in, "I")
+        self.a_mark_out = A("구간 끝점 찍기 (구간 추가)", self.mark_out, "O")
+        self.a_pip_open = A("PIP로 파일 열기…", self.open_pip_dialog, "Ctrl+P")
+        self.a_pip_current = A("지금 영상을 PIP로 하나 더 띄우기", lambda: self._current and self.add_pip(self._current, sync=True))
+        self.a_pip_close = A("모든 PIP 닫기", self.close_all_pips)
+        self.a_pip_auto = A("블랙박스 뒤 카메라 자동 PIP", self._on_pip_auto_toggled, checkable=True)
 
         self.a_library = A("라이브러리…", lambda: self.show_library(0), "Ctrl+L")
         self.a_dupes = A("중복 동영상 정리…", lambda: self.show_library(1), "Ctrl+D")
@@ -215,6 +245,9 @@ class MainWindow(QMainWindow):
         for s in (0.5, 0.75, 1.0, 1.25, 1.5, 2.0):
             speed.addAction(f"{s}x", lambda s=s: self.set_speed(s))
         m.addAction(self.a_ab)
+        m.addSeparator()
+        clip = m.addMenu("구간 잘라 이어 보기")
+        clip.addActions([self.a_mark_in, self.a_mark_out, self.a_clips])
 
         m = mb.addMenu("오디오(&A)")
         m.addActions([self.a_vol_up, self.a_vol_down, self.a_mute])
@@ -246,6 +279,9 @@ class MainWindow(QMainWindow):
             a.setData(value)
             self.hwdec_group.addAction(a)
         m.addAction(self.a_compat)
+        m.addSeparator()
+        pip = m.addMenu("PIP (화면 속 화면)")
+        pip.addActions([self.a_pip_open, self.a_pip_current, self.a_pip_auto, self.a_pip_close])
         m.addSeparator()
         m.addAction(self.a_screenshot)
 
@@ -287,6 +323,8 @@ class MainWindow(QMainWindow):
         c.playlist_toggle.connect(self.a_playlist.trigger)
 
         self.playlist.play_requested.connect(self.play)
+        self.clips_panel.play_requested.connect(self.play_clips)
+        v.pause_changed.connect(lambda _p: self._sync_pips(force=True))
         v.start_observing()
 
     # ------------------------------------------------------------------ 설정
@@ -303,6 +341,7 @@ class MainWindow(QMainWindow):
         self.set_hwdec(s.value("hwdecMode", DEFAULT_HWDEC), announce=False)
         self.a_compat.setChecked(s.value("compatMode", False, type=bool))
         self.set_compat_mode(announce=False)
+        self.a_pip_auto.setChecked(s.value("pipAuto", False, type=bool))
         self.playlist.set_repeat_mode(s.value("repeat", "none"))
 
 
@@ -321,8 +360,12 @@ class MainWindow(QMainWindow):
         s.setValue("repeat", self.playlist.repeat_mode().value)
         s.setValue("hwdecMode", self._hwdec)
         s.setValue("compatMode", self.a_compat.isChecked())
+        s.setValue("pipAuto", self.a_pip_auto.isChecked())
         if self._library:
             self._library.close()
+        for pip in list(self._pips):
+            pip.close_pip()
+        self._sync_timer.stop()
         self.video.shutdown()
         self.db.close()
         self._closed = True
@@ -377,13 +420,14 @@ class MainWindow(QMainWindow):
 
     # ------------------------------------------------------------------ 재생
     def play(self, path: str) -> None:
+        self._end_clip_mode()
         self._save_position()
         self._current = path
         self._time, self._duration = 0.0, 0.0
         self._data_sub_checked = False
         self.controls.reset()
         self.playlist.set_current(path)
-        self.player.play(path)
+        self.video.load(path)
         self.player.pause = False
         self.setWindowTitle(f"{os.path.basename(path) or path} - {APP_NAME}")
         self._add_recent(path)
@@ -478,6 +522,8 @@ class MainWindow(QMainWindow):
             mode = DEFAULT_HWDEC
         self._hwdec = mode
         self._set_prop("hwdec", mode)
+        for pip in self._pips:
+            pip.player.hwdec = mode
         for a in self.hwdec_group.actions():
             a.setChecked(a.data() == mode)
         if announce:
@@ -485,6 +531,8 @@ class MainWindow(QMainWindow):
 
     def set_compat_mode(self, announce: bool = True) -> None:
         self.video.set_compat_mode(self.a_compat.isChecked())
+        for pip in self._pips:
+            pip.video.set_compat_mode(self.a_compat.isChecked())
         if self.video.software_rendering:
             self.a_compat.setChecked(True)
         if announce:
@@ -508,6 +556,7 @@ class MainWindow(QMainWindow):
             f"OpenGL: {self.video.gl_renderer or '(초기화 전)'}",
             f"하드웨어 가속 설정: {self._hwdec} / 실제 사용: {prop('hwdec-current') or 'no'}",
             f"호환 모드: {'켜짐' if self.video.compat_mode else '꺼짐'}",
+            f"ffmpeg(내보내기): {find_ffmpeg() or '없음'}",
             f"영상 코덱: {prop('video-codec')}",
             f"영상 형식: {vp.get('w')}x{vp.get('h')} {vp.get('pixelformat')}",
             f"재생 위치: {fmt_time(self._time)} / {fmt_time(self._duration or None)}",
@@ -596,6 +645,9 @@ class MainWindow(QMainWindow):
         path = self._current
         if not path:
             return
+        if self._clip_index is not None:
+            return  # 구간 재생은 이어보기 없이 구간 시작점부터
+        self._update_auto_pip()
         pos = self.db.load_position(path)
         dur = self.player.duration or 0
         if pos and pos >= RESUME_MIN_SECONDS and (not dur or pos < dur * RESUME_END_MARGIN):
@@ -608,6 +660,9 @@ class MainWindow(QMainWindow):
         self.statusBar().showMessage(f"재생 실패: {self._current} ({msg})", 8000)
 
     def _on_eof(self) -> None:
+        if self._clip_index is not None:
+            self.play_clips(self._clip_index + 1)
+            return
         if self._current:
             self.db.clear_position(self._current)
         nxt = self.playlist.neighbor(1, auto=True)
@@ -616,12 +671,171 @@ class MainWindow(QMainWindow):
 
     def _save_position(self) -> None:
         path = self._current
-        if self._closed or not path or "://" in path or self._time <= 0:
+        if self._closed or self._clip_index is not None or not path or "://" in path or self._time <= 0:
             return
         if self._duration and self._time >= self._duration * RESUME_END_MARGIN:
             self.db.clear_position(path)
         elif self._time >= RESUME_MIN_SECONDS:
             self.db.save_position(path, self._time, self._duration or None)
+
+    # ------------------------------------------------------------------ 구간 잘라 이어 보기
+    def mark_in(self) -> None:
+        if not self._current:
+            return
+        self._mark_in = (self._current, self._time)
+        self.osd(f"구간 시작점 {fmt_time(self._time)}  (끝점: O)")
+
+    def mark_out(self) -> None:
+        if not self._current:
+            return
+        if not self._mark_in or self._mark_in[0] != self._current:
+            self.osd("먼저 I 키로 이 영상의 시작점을 찍어 주세요")
+            return
+        vp = self.player.video_params or {}
+        try:
+            fps = float(self.player.container_fps or 0)
+        except (TypeError, ValueError):
+            fps = 0.0
+        clip = Clip(self._current, self._mark_in[1], self._time,
+                    width=int(vp.get("w") or 0), height=int(vp.get("h") or 0), fps=fps,
+                    has_audio=any(t.get("type") == "audio" for t in self._tracks))
+        try:
+            self.clips_panel.add_clip(clip)
+        except ValueError as e:
+            self.osd(str(e))
+            return
+        self._mark_in = None
+        self.osd(f"구간 추가: {fmt_time(clip.start)} ~ {fmt_time(clip.end)}")
+        if not self.isFullScreen():
+            self.clips_dock.show()
+            self.clips_dock.raise_()
+
+    def play_clips(self, index: int) -> None:
+        clips = self.clips_panel.clips()
+        while 0 <= index < len(clips) and not os.path.exists(clips[index].path):
+            index += 1  # 사라진 파일은 건너뜀
+        if not (0 <= index < len(clips)):
+            if self._clip_index is not None:
+                self._end_clip_mode()
+                self.osd("구간 재생을 마쳤습니다")
+            return
+        self._save_position()
+        c = clips[index]
+        self._clip_index = index
+        self._current = c.path
+        self._time, self._duration = c.start, 0.0
+        self._data_sub_checked = False
+        self.controls.reset()
+        self.playlist.set_current(c.path)
+        self.video.load(c.path, start=f"{c.start:.3f}", end=f"{c.end:.3f}")
+        self.player.pause = False
+        self.clips_panel.highlight(index)
+        self.setWindowTitle(f"[구간 {index + 1}/{len(clips)}] {c.name} - {APP_NAME}")
+        self.osd(f"구간 {index + 1}/{len(clips)}: {c.name}")
+
+    def _end_clip_mode(self) -> None:
+        if self._clip_index is not None:
+            self._clip_index = None
+            self.clips_panel.highlight(None)
+
+    def _toggle_dock(self, dock: QDockWidget) -> None:
+        if dock.isVisible() and not dock.visibleRegion().isEmpty():
+            dock.hide()
+        else:
+            dock.show()
+            dock.raise_()
+
+    # ------------------------------------------------------------------ PIP
+    def add_pip(self, path: str, sync: bool, auto_partner: bool = False) -> PipView | None:
+        if len(self._pips) >= MAX_PIPS:
+            self.osd(f"PIP는 최대 {MAX_PIPS}개까지 띄울 수 있습니다")
+            return None
+        pip = PipView(self.area, path, sync, auto_partner)
+        pip.player.hwdec = self._hwdec
+        pip.video.set_compat_mode(self.a_compat.isChecked())
+        pip.closed.connect(self._on_pip_closed)
+        pip.sync_toggled.connect(lambda _p, _on: self._sync_pips(force=True))
+        w = max(int(self.area.width() * 0.32), 240)
+        pip.resize(w, int(w * 9 / 16) + 30)
+        n = len(self._pips)
+        pip.move_within_parent(self.area.rect().topRight() - pip.rect().topRight()
+                               + QPoint(-12 - 24 * n, 12 + 24 * n))
+        pip.show()
+        pip.raise_()
+        self._pips.append(pip)
+        self._sync_pips(force=True)
+        return pip
+
+    def _on_pip_closed(self, pip: PipView) -> None:
+        if pip in self._pips:
+            self._pips.remove(pip)
+
+    def close_all_pips(self) -> None:
+        for pip in list(self._pips):
+            pip.close_pip()
+
+    def open_pip_dialog(self) -> None:
+        exts = " ".join(f"*{e}" for e in sorted(VIDEO_EXTENSIONS))
+        start = os.path.dirname(self._current) if self._current and os.path.exists(self._current) \
+            else self.settings.value("lastDir", "")
+        files, _ = QFileDialog.getOpenFileNames(self, "PIP로 열 동영상", start, f"동영상 ({exts});;모든 파일 (*)")
+        for f in files:
+            # 메인 영상이 있으면 기본으로 동기화 (블랙박스 앞뒤처럼 같은 시각 영상을 같이 보는 경우)
+            self.add_pip(f, sync=self._current is not None)
+
+    def _on_pip_auto_toggled(self) -> None:
+        if self.a_pip_auto.isChecked():
+            self._update_auto_pip(announce=True)
+        else:
+            for pip in [p for p in self._pips if p.auto_partner]:
+                pip.close_pip()
+
+    def _update_auto_pip(self, announce: bool = False) -> None:
+        if not self.a_pip_auto.isChecked() or not self._current:
+            return
+        partner = find_partner(self._current)
+        auto = next((p for p in self._pips if p.auto_partner), None)
+        if partner:
+            if auto is None:
+                self.add_pip(partner, sync=True, auto_partner=True)
+            elif auto.path != partner:
+                auto.load(partner)
+                self._sync_pips(force=True)
+        else:
+            if auto is not None:
+                auto.close_pip()
+            if announce:
+                self.osd("짝이 되는 앞/뒤 카메라 파일을 찾지 못했습니다")
+
+    def _sync_pips(self, force: bool = False) -> None:
+        """동기화된 PIP 를 메인 영상의 재생 상태·시각·속도에 맞춘다."""
+        if not self._pips or self._closed:
+            return
+        try:
+            paused = bool(self.player.pause) or self._current is None
+            speed = self.player.speed or 1.0
+        except Exception:
+            return
+        for pip in self._pips:
+            if not pip.sync.isChecked():
+                continue
+            try:
+                p = pip.player
+                if bool(p.pause) != paused:
+                    p.pause = paused
+                if abs((p.speed or 1.0) - speed) > 1e-3:
+                    p.speed = speed
+                if self._current is None:
+                    continue
+                target = self._time
+                dur = p.duration
+                if dur:
+                    target = min(target, max(dur - 0.05, 0))
+                if abs(pip.time - target) > (0.15 if force or paused else 0.5):
+                    p.seek(target, "absolute", "exact")
+                    pip.time = target
+            except Exception:
+                continue  # 아직 파일을 여는 중
 
     # ------------------------------------------------------------------ 화면
     def toggle_fullscreen(self) -> None:
