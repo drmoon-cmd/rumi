@@ -1,0 +1,10 @@
+# 빌드에 쓰는 라이브러리 버전 고정 (빌드마다 다른 버전이 섞여 들어오지 않도록).
+# 올릴 때는 이 파일만 고치고, 바뀐 버전을 커밋 기록으로 남긴다.
+PySide6==6.11.2
+PySide6-Essentials==6.11.2
+PySide6-Addons==6.11.2
+shiboken6==6.11.2
+python-mpv==1.0.8
+imageio-ffmpeg==0.6.0
+pyinstaller==6.22.3
+pytest==9.1.1

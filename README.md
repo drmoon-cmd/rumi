@@ -110,3 +110,11 @@ rumi/
     library_window.py 라이브러리 / 중복 정리 / 정리함
 packaging/        PyInstaller, Inno Setup 설정
 ```
+
+## 안전성 점검
+
+- 프로그램은 인터넷과 통신하지 않습니다. 외부 프로그램은 탐색기(파일 위치 열기)와 ffmpeg(구간 내보내기)만 실행합니다.
+- 빌드할 때마다 **Microsoft Defender**와 **ClamAV** 두 백신으로 설치 파일을 검사하고, 그 결과와 파일 지문(SHA-256)을 Actions 로그에 남깁니다.
+- 빌드에 쓰는 라이브러리 버전은 `packaging/constraints.txt`에 고정합니다.
+- 서명되지 않은 새 실행 파일이라 크롬/Windows가 경고를 띄울 수 있습니다 (코드 서명 인증서로 해결).
+
