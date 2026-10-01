@@ -5,8 +5,10 @@ from __future__ import annotations
 import os
 
 from PySide6.QtCore import QPoint, Qt, Signal
+from PySide6.QtGui import QCursor
 from PySide6.QtWidgets import (
-    QCheckBox, QFrame, QHBoxLayout, QLabel, QSizeGrip, QStyle, QToolButton, QVBoxLayout, QWidget,
+    QCheckBox, QFileDialog, QFrame, QHBoxLayout, QLabel, QMenu, QSizeGrip, QStyle, QToolButton,
+    QVBoxLayout, QWidget,
 )
 
 from .mpv_widget import MpvWidget
@@ -35,10 +37,18 @@ class _TitleBar(QWidget):
     def mouseReleaseEvent(self, e):
         self._drag = None
 
+    def contextMenuEvent(self, e):
+        self._pip.show_menu(e.globalPos())
+
 
 class PipView(QFrame):
     closed = Signal(object)
     sync_toggled = Signal(object, bool)
+    swap_requested = Signal(object)          # 메인 화면과 바꾸기
+    main_pause_requested = Signal()          # 동기화 중 재생/일시정지 → 메인에 맡김
+
+    SIZES = {"작게": 0.22, "보통": 0.32, "크게": 0.45}
+    CORNERS = ("오른쪽 위", "왼쪽 위", "오른쪽 아래", "왼쪽 아래")
 
     def __init__(self, parent: QWidget, path: str, sync: bool, auto_partner: bool = False):
         super().__init__(parent)
@@ -54,7 +64,8 @@ class PipView(QFrame):
         self.player = self.video.player
         self.player.mute = True
         self.video.time_changed.connect(lambda t: setattr(self, "time", t))
-        self.video.double_clicked.connect(lambda: self.player.cycle("pause") if not self.sync.isChecked() else None)
+        self.video.double_clicked.connect(self.toggle_pause)
+        self.video.context_menu_requested.connect(self.show_menu)
         self.video.start_observing()
 
         title = _TitleBar(self)
@@ -101,11 +112,59 @@ class PipView(QFrame):
         self._update_sound_icon()
         self.load(path)
 
-    def load(self, path: str) -> None:
+    def load(self, path: str, **options) -> None:
         self.path = path
         self.label.setText(os.path.basename(path))
         self.label.setToolTip(path)
-        self.video.load(path)
+        self.video.load(path, **options)
+
+    def toggle_pause(self) -> None:
+        if self.sync.isChecked():
+            self.main_pause_requested.emit()
+        else:
+            self.player.pause = not self.player.pause
+
+    def show_menu(self, global_pos: QPoint | None = None) -> None:
+        menu = QMenu(self)
+        paused = bool(self.player.pause)
+        menu.addAction("재생" if paused else "일시정지", self.toggle_pause)
+        sync = menu.addAction("메인 영상과 동기화", lambda: self.sync.setChecked(not self.sync.isChecked()))
+        sync.setCheckable(True)
+        sync.setChecked(self.sync.isChecked())
+        sound = menu.addAction("소리 켜기", self.toggle_sound)
+        sound.setCheckable(True)
+        sound.setChecked(not self.player.mute)
+        menu.addSeparator()
+        menu.addAction("메인 화면과 바꾸기", lambda: self.swap_requested.emit(self))
+        menu.addAction("다른 파일 열기…", self._open_other)
+        size = menu.addMenu("크기")
+        for label, ratio in self.SIZES.items():
+            size.addAction(label, lambda r=ratio: self.set_size_ratio(r))
+        corner = menu.addMenu("위치")
+        for label in self.CORNERS:
+            corner.addAction(label, lambda c=label: self.move_to_corner(c))
+        menu.addSeparator()
+        menu.addAction("PIP 닫기", self.close_pip)
+        menu.exec(global_pos or QCursor.pos())
+
+    def _open_other(self) -> None:
+        start = os.path.dirname(self.path) if self.path else ""
+        f, _ = QFileDialog.getOpenFileName(self, "PIP로 열 동영상", start)
+        if f:
+            self.auto_partner = False  # 직접 고른 파일은 자동 짝 찾기에서 빼낸다
+            self.load(f)
+
+    def set_size_ratio(self, ratio: float) -> None:
+        p = self.parentWidget()
+        w = max(int(p.width() * ratio), 200)
+        self.resize(w, int(w * 9 / 16) + 30)
+        self.move_within_parent(self.pos())
+
+    def move_to_corner(self, corner: str) -> None:
+        p, m = self.parentWidget(), 12
+        x = m if "왼쪽" in corner else p.width() - self.width() - m
+        y = m if "위" in corner else p.height() - self.height() - m - 60  # 아래는 컨트롤 바 피하기
+        self.move_within_parent(QPoint(x, y))
 
     def toggle_sound(self) -> None:
         self.player.mute = not self.player.mute

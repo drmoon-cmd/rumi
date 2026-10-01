@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import os
 import platform
+import time
 from pathlib import Path
 
 from PySide6.QtCore import QPoint, QSettings, QStandardPaths, Qt, QTimer, qVersion
@@ -114,6 +115,7 @@ class MainWindow(QMainWindow):
         self._pips: list[PipView] = []
         self._clip_index: int | None = None   # 구간 이어 재생 중이면 현재 구간 번호
         self._mark_in: tuple[str, float] | None = None
+        self._skip_resume = False
 
         self.video = MpvWidget()
         self.player = self.video.player
@@ -419,15 +421,17 @@ class MainWindow(QMainWindow):
             self.open_paths(paths)
 
     # ------------------------------------------------------------------ 재생
-    def play(self, path: str) -> None:
+    def play(self, path: str, start: float | None = None) -> None:
+        """파일 재생. start 를 주면 이어보기 대신 그 위치부터 재생한다."""
         self._end_clip_mode()
         self._save_position()
+        self._skip_resume = start is not None
         self._current = path
         self._time, self._duration = 0.0, 0.0
         self._data_sub_checked = False
         self.controls.reset()
         self.playlist.set_current(path)
-        self.video.load(path)
+        self.video.load(path, **({"start": f"{start:.3f}"} if start is not None else {}))
         self.player.pause = False
         self.setWindowTitle(f"{os.path.basename(path) or path} - {APP_NAME}")
         self._add_recent(path)
@@ -561,9 +565,15 @@ class MainWindow(QMainWindow):
             f"영상 형식: {vp.get('w')}x{vp.get('h')} {vp.get('pixelformat')}",
             f"재생 위치: {fmt_time(self._time)} / {fmt_time(self._duration or None)}",
         ])
+        info += "\n\n[메인 영상]\n" + "\n".join(self.video.diagnostics())
+        for i, pip in enumerate(self._pips, 1):
+            info += f"\n\n[PIP {i}] 동기화={'켜짐' if pip.sync.isChecked() else '꺼짐'}\n" + "\n".join(pip.video.diagnostics())
         QApplication.clipboard().setText(info)
-        QMessageBox.information(self, "진단 정보",
-                                "아래 내용을 복사했습니다. 그대로 붙여 넣어 보내 주세요.\n\n" + info)
+        box = QMessageBox(QMessageBox.Information, "진단 정보",
+                          "진단 정보를 복사했습니다. 그대로 붙여 넣어 보내 주세요.\n\n"
+                          + "\n".join(info.splitlines()[:10]), parent=self)
+        box.setDetailedText(info)
+        box.exec()
 
     # ------------------------------------------------------------------ 자막/트랙
     def load_subtitle_dialog(self) -> None:
@@ -648,6 +658,9 @@ class MainWindow(QMainWindow):
         if self._clip_index is not None:
             return  # 구간 재생은 이어보기 없이 구간 시작점부터
         self._update_auto_pip()
+        if self._skip_resume:
+            self._skip_resume = False
+            return
         pos = self.db.load_position(path)
         dur = self.player.duration or 0
         if pos and pos >= RESUME_MIN_SECONDS and (not dur or pos < dur * RESUME_END_MARGIN):
@@ -755,6 +768,8 @@ class MainWindow(QMainWindow):
         pip.video.set_compat_mode(self.a_compat.isChecked())
         pip.closed.connect(self._on_pip_closed)
         pip.sync_toggled.connect(lambda _p, _on: self._sync_pips(force=True))
+        pip.swap_requested.connect(self.swap_with_pip)
+        pip.main_pause_requested.connect(self.toggle_pause)
         w = max(int(self.area.width() * 0.32), 240)
         pip.resize(w, int(w * 9 / 16) + 30)
         n = len(self._pips)
@@ -765,6 +780,17 @@ class MainWindow(QMainWindow):
         self._pips.append(pip)
         self._sync_pips(force=True)
         return pip
+
+    def swap_with_pip(self, pip: PipView) -> None:
+        """PIP 영상과 메인 영상을 맞바꾼다 (재생 위치 유지)."""
+        main_path, main_t = self._current, self._time
+        pip_path, pip_t = pip.path, pip.time
+        if main_path is None:
+            pip.close_pip()
+            self.play(pip_path, start=pip_t)
+            return
+        pip.load(main_path, start=f"{main_t:.3f}")
+        self.play(pip_path, start=pip_t)
 
     def _on_pip_closed(self, pip: PipView) -> None:
         if pip in self._pips:
@@ -831,9 +857,15 @@ class MainWindow(QMainWindow):
                 dur = p.duration
                 if dur:
                     target = min(target, max(dur - 0.05, 0))
-                if abs(pip.time - target) > (0.15 if force or paused else 0.5):
+                # 직전 탐색이 끝나기 전에 또 탐색하면 화면이 한 번도 안 그려질 수 있으므로,
+                # 탐색 중이거나 방금 탐색했으면 기다린다.
+                now = time.monotonic()
+                if p.seeking or (not force and now - getattr(pip, "last_seek", 0) < 2.0):
+                    continue
+                if abs(pip.time - target) > (0.15 if force or paused else 1.0):
                     p.seek(target, "absolute", "exact")
                     pip.time = target
+                    pip.last_seek = now
             except Exception:
                 continue  # 아직 파일을 여는 중
 

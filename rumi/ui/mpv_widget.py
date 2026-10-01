@@ -7,6 +7,8 @@ mpv 이벤트는 mpv 스레드에서 들어오므로 모두 Qt 시그널로 넘�
 from __future__ import annotations
 
 import locale
+import time
+from collections import deque
 
 from PySide6.QtCore import QByteArray, Qt, Signal
 from PySide6.QtGui import QOpenGLFunctions
@@ -61,6 +63,7 @@ class MpvWidget(QOpenGLWidget):
 
     mouse_moved = Signal()
     clicked = Signal()
+    context_menu_requested = Signal(object)  # 전역 좌표 QPoint
     double_clicked = Signal()
     wheel_scrolled = Signal(int)
 
@@ -68,6 +71,7 @@ class MpvWidget(QOpenGLWidget):
         super().__init__(parent)
         # libmpv 는 C 로케일 숫자 형식을 요구한다
         locale.setlocale(locale.LC_NUMERIC, "C")
+        self.log_lines: deque[str] = deque(maxlen=30)  # MPV 생성 중에도 로그가 올 수 있음
         self.player = mpv.MPV(
             vo="libmpv",
             hwdec=DEFAULT_HWDEC,
@@ -81,6 +85,8 @@ class MpvWidget(QOpenGLWidget):
             screenshot_directory="~~desktop/",
             osd_font_size=36,
             ytdl="no",
+            log_handler=self._on_log,
+            loglevel="warn",
         )
         self._render_ctx: mpv.MpvRenderContext | None = None
         self.software_rendering = False
@@ -99,6 +105,31 @@ class MpvWidget(QOpenGLWidget):
         self.setFocusPolicy(Qt.StrongFocus)
         self.setMinimumSize(320, 180)
         self._observing = False
+
+    def _on_log(self, level: str, component: str, message: str) -> None:
+        # mpv 스레드에서 호출됨. 진단용으로 최근 경고/오류만 보관
+        self.log_lines.append(f"{time.strftime('%H:%M:%S')} [{level}] {component}: {message.strip()}")
+
+    def diagnostics(self) -> list[str]:
+        """문제 신고용 상태 요약."""
+        p = self.player
+
+        def prop(name):
+            try:
+                return getattr(p, name.replace("-", "_"))
+            except Exception:
+                return None
+
+        vp = prop("video-params") or {}
+        return [
+            f"파일: {prop('path')}",
+            f"재생 위치: {prop('time-pos')} / {prop('duration')}  일시정지={prop('pause')} 탐색중={prop('seeking')}",
+            f"영상 출력 준비: 렌더={'예' if self._render_ctx else '아니오'} vo-configured={prop('vo-configured')}",
+            f"영상: {prop('video-codec')} {vp.get('w')}x{vp.get('h')} {vp.get('pixelformat')}"
+            f"  하드웨어={prop('hwdec-current') or 'no'}",
+            "최근 mpv 메시지:",
+            *(f"  {line}" for line in list(self.log_lines)[-12:]),
+        ]
 
     def start_observing(self) -> None:
         """시그널을 모두 연결한 뒤 호출. 등록 즉시 현재 값이 한 번씩 전달된다."""
@@ -198,6 +229,8 @@ class MpvWidget(QOpenGLWidget):
     def mouseReleaseEvent(self, e):
         if e.button() == Qt.LeftButton:
             self.clicked.emit()
+        elif e.button() == Qt.RightButton:
+            self.context_menu_requested.emit(e.globalPosition().toPoint())
         super().mouseReleaseEvent(e)
 
     def mouseDoubleClickEvent(self, e):
