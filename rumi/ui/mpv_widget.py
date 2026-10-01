@@ -10,7 +10,7 @@ import locale
 import time
 from collections import deque
 
-from PySide6.QtCore import QByteArray, Qt, Signal
+from PySide6.QtCore import QByteArray, Qt, QTimer, Signal
 from PySide6.QtGui import QOpenGLFunctions
 from PySide6.QtGui import QOpenGLContext
 from PySide6.QtOpenGLWidgets import QOpenGLWidget
@@ -167,16 +167,42 @@ class MpvWidget(QOpenGLWidget):
         self.software_rendering = any(name in self.gl_renderer.lower() for name in SOFTWARE_RENDERERS)
         if self.software_rendering:
             self.set_compat_mode(True)
-        self.renderer_ready.emit()
-        if self._pending_load is not None:
-            path, options = self._pending_load
-            self._pending_load = None
-            self.player.loadfile(path, **options)
+        # Windows 등에서 GL 컨텍스트가 다시 만들어지면 initializeGL 이 또 불린다.
+        # 이전 렌더 컨텍스트는 쓸 수 없으므로 정리하고 새로 만든다.
+        self._free_render_ctx()
         self._render_ctx = mpv.MpvRenderContext(
             self.player, "opengl",
             opengl_init_params={"get_proc_address": self._proc_fn},
         )
         self._render_ctx.update_cb = self._frame_ready.emit
+        ctx = self.context()
+        if ctx is not None:
+            ctx.aboutToBeDestroyed.connect(self._on_context_destroyed)
+        self.renderer_ready.emit()
+        # 렌더 컨텍스트가 완전히 준비된 다음(이벤트 루프 다음 차례)에 미뤄 둔 파일을 연다.
+        # 렌더 컨텍스트보다 먼저 열면 영상 출력 초기화가 실패해 검은 화면만 나온다.
+        if self._pending_load is not None:
+            QTimer.singleShot(0, self._flush_pending_load)
+
+    def _flush_pending_load(self) -> None:
+        if self._pending_load is not None and self._render_ctx is not None:
+            path, options = self._pending_load
+            self._pending_load = None
+            self.player.loadfile(path, **options)
+
+    def _free_render_ctx(self) -> None:
+        if self._render_ctx is not None:
+            try:
+                self._render_ctx.free()
+            except Exception:
+                pass
+            self._render_ctx = None
+
+    def _on_context_destroyed(self) -> None:
+        # Qt 문서: GL 자원은 컨텍스트가 사라지기 전에 컨텍스트를 활성화한 상태에서 해제해야 한다
+        self.makeCurrent()
+        self._free_render_ctx()
+        self.doneCurrent()
 
     def paintGL(self) -> None:
         if self._render_ctx is None:

@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import json
 import os
 import platform
 import time
@@ -354,6 +355,10 @@ class MainWindow(QMainWindow):
         self.set_compat_mode(announce=False)
         self.a_pip_auto.setChecked(s.value("pipAuto", False, type=bool))
         self.playlist.set_repeat_mode(s.value("repeat", "none"))
+        try:
+            self.playlist.restore_state(json.loads(s.value("playlists", "") or "{}"))
+        except (ValueError, TypeError):
+            pass  # 저장된 재생목록이 깨졌으면 빈 목록으로 시작
 
 
     def closeEvent(self, e):
@@ -369,6 +374,7 @@ class MainWindow(QMainWindow):
         s.setValue("windowState", self.saveState())
         s.setValue("volume", self.player.volume)
         s.setValue("repeat", self.playlist.repeat_mode().value)
+        s.setValue("playlists", json.dumps(self.playlist.to_state(), ensure_ascii=False))
         s.setValue("hwdecMode", self._hwdec)
         s.setValue("compatMode", self.a_compat.isChecked())
         s.setValue("pipAuto", self.a_pip_auto.isChecked())
