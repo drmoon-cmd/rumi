@@ -146,3 +146,15 @@ def test_playback_position(tmp_path):
     assert db.load_position("/v.mp4") == 30.0
     db.clear_position("/v.mp4")
     assert db.load_position("/v.mp4") is None
+
+
+def test_bookmarks(tmp_path):
+    db = LibraryDB(tmp_path / "b.sqlite3")
+    a = db.add_bookmark("/v.mp4", 30.5, "사고 장면")
+    db.add_bookmark("/v.mp4", 10.0)
+    db.add_bookmark("/other.mp4", 5.0)
+    assert [(p, n) for _, p, n in db.bookmarks("/v.mp4")] == [(10.0, ""), (30.5, "사고 장면")]
+    db.rename_bookmark(a, "충돌")
+    assert db.bookmarks("/v.mp4")[1][2] == "충돌"
+    db.delete_bookmark(a)
+    assert len(db.bookmarks("/v.mp4")) == 1

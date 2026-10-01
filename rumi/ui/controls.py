@@ -2,7 +2,7 @@
 
 from __future__ import annotations
 
-from PySide6.QtCore import Qt, Signal
+from PySide6.QtCore import QPoint, Qt, Signal
 from PySide6.QtWidgets import (
     QApplication, QHBoxLayout, QLabel, QSlider, QToolButton, QVBoxLayout, QWidget,
 )
@@ -15,10 +15,13 @@ class SeekSlider(QSlider):
     """클릭한 위치로 바로 이동하는 슬라이더."""
 
     seek_requested = Signal(float)  # 0.0 ~ 1.0
+    hovered = Signal(float, QPoint)  # 마우스를 올린 위치 비율, 미리보기를 띄울 전역 좌표
+    hover_left = Signal()
 
     def __init__(self, parent=None):
         super().__init__(Qt.Horizontal, parent)
         self.setRange(0, 10000)
+        self.setMouseTracking(True)
         self._dragging = False
         self.sliderPressed.connect(lambda: setattr(self, "_dragging", True))
         self.sliderReleased.connect(self._released)
@@ -35,6 +38,16 @@ class SeekSlider(QSlider):
             self.seek_requested.emit(ratio)
         super().mousePressEvent(e)
 
+    def mouseMoveEvent(self, e):
+        x = e.position().x()
+        ratio = min(max(x / max(self.width(), 1), 0.0), 1.0)
+        self.hovered.emit(ratio, self.mapToGlobal(QPoint(int(x), 0)))
+        super().mouseMoveEvent(e)
+
+    def leaveEvent(self, e):
+        self.hover_left.emit()
+        super().leaveEvent(e)
+
     def set_ratio(self, ratio: float):
         if not self._dragging:
             self.blockSignals(True)
@@ -48,6 +61,8 @@ class ControlBar(QWidget):
     prev = Signal()
     next = Signal()
     seek_ratio = Signal(float)
+    seek_hover = Signal(float, QPoint)
+    seek_hover_end = Signal()
     volume_set = Signal(int)
     mute_toggle = Signal()
     fullscreen_toggle = Signal()
@@ -63,6 +78,8 @@ class ControlBar(QWidget):
         self.seek = SeekSlider()
         self.seek.setObjectName("seekSlider")
         self.seek.seek_requested.connect(self.seek_ratio)
+        self.seek.hovered.connect(self.seek_hover)
+        self.seek.hover_left.connect(self.seek_hover_end)
         self.time_label = QLabel("--:-- / --:--")
         self.speed_label = QLabel("")
 

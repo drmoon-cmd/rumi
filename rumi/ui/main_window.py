@@ -24,11 +24,19 @@ from .mpv_widget import DEFAULT_HWDEC, HWDEC_MODES, MpvWidget
 from ..clips import Clip
 from ..dashcam import find_partner
 from ..tools import find_ffmpeg
+from ..media_tools import AudioSettings, build_audio_filter
+from .capture import build_contact_sheet
 from .clips_panel import ClipsPanel
+from .dialogs import (
+    MOUSE_DEFAULTS, SUB_DEFAULTS, AudioDialog, BookmarksDialog, PreferencesDialog, SubtitleStyleDialog,
+    VideoAdjustDialog,
+)
+from .seek_preview import SeekPreview
+from .workers import run_with_progress
 from .pip import MAX_PIPS, PipView
 from .playlist import PlaylistPanel
 from .theme import DEFAULT_THEME, THEMES, apply_theme
-from .util import fmt_time
+from .util import fmt_time, reveal_in_file_manager
 
 SUBTITLE_EXTENSIONS = {".srt", ".smi", ".sami", ".ass", ".ssa", ".vtt", ".sub", ".idx", ".sup"}
 MAX_RECENT = 10
@@ -56,6 +64,13 @@ SHORTCUT_HELP = """
 <tr><td><b>F9 / F10</b></td><td>재생목록 / 구간 목록</td></tr>
 <tr><td><b>I / O</b></td><td>구간 시작점 / 끝점(구간 추가)</td></tr>
 <tr><td><b>Ctrl + P</b></td><td>PIP로 파일 열기</td></tr>
+<tr><td><b>1/2 · 3/4 · 5/6 · 7/8</b></td><td>명암 · 밝기 · 감마 · 채도</td></tr>
+<tr><td><b>Ctrl + 휠, Ctrl +/-/0</b></td><td>화면 확대 / 축소 / 초기화 (확대 중 끌어서 이동)</td></tr>
+<tr><td><b>Ctrl + R</b></td><td>90° 회전</td></tr>
+<tr><td><b>B / Ctrl + B</b></td><td>책갈피 추가 / 관리</td></tr>
+<tr><td><b>N</b></td><td>소리 크기 자동 맞춤</td></tr>
+<tr><td><b>Ctrl + [ / ] / Backspace</b></td><td>소리 싱크 -0.1초 / +0.1초 / 초기화</td></tr>
+<tr><td><b>Ctrl + ,</b></td><td>환경 설정 (단축키·마우스)</td></tr>
 <tr><td><b>Ctrl + L</b></td><td>라이브러리 / 중복 정리</td></tr>
 </table>
 """
@@ -118,7 +133,13 @@ class MainWindow(QMainWindow):
         self._pips: list[PipView] = []
         self._clip_index: int | None = None   # 구간 이어 재생 중이면 현재 구간 번호
         self._mark_in: tuple[str, float] | None = None
-        self._skip_resume = False
+        self._skip_resume = False  # 다음 파일 로드 때 이어보기 건너뛰기
+        self._zoom = 0.0
+        self._pan = [0.0, 0.0]
+        self._mouse = dict(MOUSE_DEFAULTS)
+        self._audio = AudioSettings()
+        self._sub_style = dict(SUB_DEFAULTS)
+        self._burst_left = 0
 
         self.video = MpvWidget()
         self.player = self.video.player
@@ -226,6 +247,46 @@ class MainWindow(QMainWindow):
         self.a_diag = A("진단 정보 복사", self.copy_diagnostics)
         self.a_compat = A("호환 모드 (화면이 깨지거나 검게 나올 때)", lambda: self.set_compat_mode(), checkable=True)
 
+        # 영상 보정 / 확대 / 회전
+        self.a_contrast_dn = A("명암 -", lambda: self.adjust_video("contrast", -2), "1")
+        self.a_contrast_up = A("명암 +", lambda: self.adjust_video("contrast", 2), "2")
+        self.a_bright_dn = A("밝기 -", lambda: self.adjust_video("brightness", -2), "3")
+        self.a_bright_up = A("밝기 +", lambda: self.adjust_video("brightness", 2), "4")
+        self.a_gamma_dn = A("감마 -", lambda: self.adjust_video("gamma", -2), "5")
+        self.a_gamma_up = A("감마 +", lambda: self.adjust_video("gamma", 2), "6")
+        self.a_sat_dn = A("채도 -", lambda: self.adjust_video("saturation", -2), "7")
+        self.a_sat_up = A("채도 +", lambda: self.adjust_video("saturation", 2), "8")
+        self.a_video_adjust = A("영상 보정…", self.show_video_adjust, "Ctrl+E")
+        self.a_zoom_in = A("화면 확대", lambda: self.change_zoom(0.1), ["Ctrl+=", "Ctrl++"])
+        self.a_zoom_out = A("화면 축소", lambda: self.change_zoom(-0.1), "Ctrl+-")
+        self.a_zoom_reset = A("확대 초기화", self.reset_zoom, "Ctrl+0")
+        self.a_rotate = A("90° 회전", self.rotate, "Ctrl+R")
+        self.a_hflip = A("좌우 반전", lambda: self.toggle_flip("hflip", self.a_hflip), checkable=True)
+        self.a_vflip = A("상하 반전", lambda: self.toggle_flip("vflip", self.a_vflip), checkable=True)
+        self.a_transform_reset = A("회전·반전 초기화", self.reset_transform)
+
+        # 편의 기능
+        self.a_bookmark_add = A("책갈피 추가", self.add_bookmark, "B")
+        self.a_bookmarks = A("책갈피 관리…", self.show_bookmarks, "Ctrl+B")
+        self.a_burst = A("연속 캡처…", self.burst_capture)
+        self.a_sheet = A("장면 모음 만들기…", self.make_contact_sheet)
+        self.a_prefs = A("환경 설정 (단축키·마우스)…", self.show_preferences, "Ctrl+,")
+
+        # 소리 / 자막
+        self.a_audio = A("소리 설정 (이퀄라이저·싱크)…", self.show_audio_dialog)
+        self.a_normalize = A("소리 크기 자동 맞춤", self.toggle_normalize, "N", checkable=True)
+        self.a_adelay_minus = A("소리 싱크 -0.1초", lambda: self.change_audio_delay(-0.1), "Ctrl+[")
+        self.a_adelay_plus = A("소리 싱크 +0.1초", lambda: self.change_audio_delay(0.1), "Ctrl+]")
+        self.a_adelay_reset = A("소리 싱크 초기화", lambda: self.change_audio_delay(None), "Ctrl+Backspace")
+        self.a_sub_style = A("자막 모양 (글꼴·색·위치)…", self.show_sub_style)
+
+        # 단축키 사용자 지정을 위해 각 동작에 고정 이름을 붙이고 기본 단축키를 기억한다
+        self._default_shortcuts: dict[str, str] = {}
+        for name, value in list(vars(self).items()):
+            if name.startswith("a_") and isinstance(value, QAction):
+                value.setObjectName(name)
+                self._default_shortcuts[name] = value.shortcut().toString(QKeySequence.PortableText)
+
     def _build_menus(self) -> None:
         mb = self.menuBar()
 
@@ -233,6 +294,8 @@ class MainWindow(QMainWindow):
         m.addActions([self.a_open, self.a_open_folder, self.a_open_url])
         self.recent_menu = m.addMenu("최근 파일")
         self.recent_menu.aboutToShow.connect(self._fill_recent_menu)
+        m.addSeparator()
+        m.addAction(self.a_prefs)
         m.addSeparator()
         m.addAction(self.a_quit)
 
@@ -250,6 +313,8 @@ class MainWindow(QMainWindow):
         for s in (0.5, 0.75, 1.0, 1.25, 1.5, 2.0):
             speed.addAction(f"{s}x", lambda s=s: self.set_speed(s))
         m.addAction(self.a_ab)
+        self.bookmark_menu = m.addMenu("책갈피")
+        self.bookmark_menu.aboutToShow.connect(self._fill_bookmark_menu)
         m.addSeparator()
         clip = m.addMenu("구간 잘라 이어 보기")
         clip.addActions([self.a_mark_in, self.a_mark_out, self.a_clips])
@@ -258,6 +323,8 @@ class MainWindow(QMainWindow):
         m.addActions([self.a_vol_up, self.a_vol_down, self.a_mute])
         m.addSeparator()
         self.audio_menu = m.addMenu("오디오 트랙")
+        m.addSeparator()
+        m.addActions([self.a_normalize, self.a_audio, self.a_adelay_minus, self.a_adelay_plus, self.a_adelay_reset])
 
         m = mb.addMenu("자막(&S)")
         m.addAction(self.a_sub_load)
@@ -265,6 +332,8 @@ class MainWindow(QMainWindow):
         m.addSeparator()
         m.addActions([self.a_sub_toggle, self.a_sub_earlier, self.a_sub_later, self.a_sub_reset,
                       self.a_sub_bigger, self.a_sub_smaller])
+        m.addSeparator()
+        m.addAction(self.a_sub_style)
 
         m = mb.addMenu("화면(&V)")
         m.addActions([self.a_full, self.a_ontop, self.a_playlist])
@@ -276,6 +345,12 @@ class MainWindow(QMainWindow):
             a.setCheckable(True)
             a.setChecked(value == "-1")
             group.addAction(a)
+        m.addAction(self.a_video_adjust)
+        zoom = m.addMenu("확대 / 축소")
+        zoom.addActions([self.a_zoom_in, self.a_zoom_out, self.a_zoom_reset])
+        rot = m.addMenu("회전 / 반전")
+        rot.addActions([self.a_rotate, self.a_hflip, self.a_vflip, self.a_transform_reset])
+        m.addSeparator()
         hw = m.addMenu("하드웨어 가속")
         self.hwdec_group = QActionGroup(self)
         for value, label in HWDEC_MODES.items():
@@ -295,7 +370,8 @@ class MainWindow(QMainWindow):
         pip = m.addMenu("PIP (화면 속 화면)")
         pip.addActions([self.a_pip_open, self.a_pip_current, self.a_pip_auto, self.a_pip_close])
         m.addSeparator()
-        m.addAction(self.a_screenshot)
+        cap = m.addMenu("캡처")
+        cap.addActions([self.a_screenshot, self.a_burst, self.a_sheet])
 
         m = mb.addMenu("라이브러리(&L)")
         m.addActions([self.a_library, self.a_dupes])
@@ -319,9 +395,11 @@ class MainWindow(QMainWindow):
         v.tracks_changed.connect(self._rebuild_track_menus)
         v.sub_text_changed.connect(self._check_data_subtitle)
         v.renderer_ready.connect(lambda: self.a_compat.setChecked(v.compat_mode))
-        v.clicked.connect(self.toggle_pause)
-        v.double_clicked.connect(self.toggle_fullscreen)
-        v.wheel_scrolled.connect(lambda d: self.change_volume(5 * d))
+        v.clicked.connect(lambda: self._mouse_action("left_click"))
+        v.double_clicked.connect(lambda: self._mouse_action("double_click"))
+        v.middle_clicked.connect(lambda: self._mouse_action("middle_click"))
+        v.wheel_scrolled.connect(self._on_wheel)
+        v.dragged.connect(self._on_drag)
         v.mouse_moved.connect(self._on_mouse_activity)
 
         c.play_pause.connect(self.toggle_pause)
@@ -333,6 +411,9 @@ class MainWindow(QMainWindow):
         c.mute_toggle.connect(self.toggle_mute)
         c.fullscreen_toggle.connect(self.toggle_fullscreen)
         c.playlist_toggle.connect(self.a_playlist.trigger)
+        self.seek_preview = SeekPreview(self)
+        c.seek_hover.connect(self._on_seek_hover)
+        c.seek_hover_end.connect(self.seek_preview.hide_preview)
 
         self.playlist.play_requested.connect(self.play)
         self.clips_panel.play_requested.connect(self.play_clips)
@@ -349,6 +430,9 @@ class MainWindow(QMainWindow):
         if state := s.value("windowState"):
             self.restoreState(state)
         self.player.volume = float(s.value("volume", 100))
+        desktop = QStandardPaths.writableLocation(QStandardPaths.DesktopLocation)
+        if desktop and os.path.isdir(desktop):
+            self.player["screenshot-directory"] = desktop
         # 0.1.1 까지 저장된 'hwdec' 값은 무시하고 새 기본값(끄기)부터 시작한다
         self.set_hwdec(s.value("hwdecMode", DEFAULT_HWDEC), announce=False)
         self.a_compat.setChecked(s.value("compatMode", False, type=bool))
@@ -359,6 +443,20 @@ class MainWindow(QMainWindow):
             self.playlist.restore_state(json.loads(s.value("playlists", "") or "{}"))
         except (ValueError, TypeError):
             pass  # 저장된 재생목록이 깨졌으면 빈 목록으로 시작
+        self._mouse = {**MOUSE_DEFAULTS, **self._load_json("mouse")}
+        a = self._load_json("audio")
+        self._audio = AudioSettings(bool(a.get("normalize", False)), int(a.get("bass", 0)), int(a.get("treble", 0)))
+        self.apply_audio(announce=False)
+        self._sub_style = {**SUB_DEFAULTS, **self._load_json("subStyle")}
+        self.apply_sub_style(self._sub_style)
+        self.apply_shortcuts(self._load_json("shortcuts"))
+
+    def _load_json(self, key: str) -> dict:
+        try:
+            value = json.loads(self.settings.value(key, "") or "{}")
+            return value if isinstance(value, dict) else {}
+        except (ValueError, TypeError):
+            return {}
 
 
     def closeEvent(self, e):
@@ -375,6 +473,10 @@ class MainWindow(QMainWindow):
         s.setValue("volume", self.player.volume)
         s.setValue("repeat", self.playlist.repeat_mode().value)
         s.setValue("playlists", json.dumps(self.playlist.to_state(), ensure_ascii=False))
+        s.setValue("mouse", json.dumps(self._mouse))
+        s.setValue("audio", json.dumps({"normalize": self._audio.normalize, "bass": self._audio.bass,
+                                        "treble": self._audio.treble}))
+        s.setValue("subStyle", json.dumps(self._sub_style, ensure_ascii=False))
         s.setValue("hwdecMode", self._hwdec)
         s.setValue("compatMode", self.a_compat.isChecked())
         s.setValue("pipAuto", self.a_pip_auto.isChecked())
@@ -441,6 +543,7 @@ class MainWindow(QMainWindow):
         self._end_clip_mode()
         self._save_position()
         self._skip_resume = start is not None
+        self.seek_preview.clear_cache()
         self._current = path
         self._time, self._duration = 0.0, 0.0
         self._data_sub_checked = False
@@ -717,6 +820,246 @@ class MainWindow(QMainWindow):
             self.db.clear_position(path)
         elif self._time >= RESUME_MIN_SECONDS:
             self.db.save_position(path, self._time, self._duration or None)
+
+    # ------------------------------------------------------------------ 마우스
+    def _mouse_action(self, key: str) -> None:
+        action = self._mouse.get(key, "none")
+        {"pause": self.toggle_pause, "fullscreen": self.toggle_fullscreen,
+         "mute": self.toggle_mute}.get(action, lambda: None)()
+
+    def _on_wheel(self, direction: int, ctrl: bool) -> None:
+        action = self._mouse.get("ctrl_wheel" if ctrl else "wheel", "none")
+        if action == "volume":
+            self.change_volume(5 * direction)
+        elif action == "seek":
+            self.seek(5 * direction)
+        elif action == "zoom":
+            self.change_zoom(0.1 * direction)
+
+    def _on_drag(self, dx: float, dy: float) -> None:
+        """확대 중일 때 끌어서 화면 이동."""
+        if self._zoom <= 0:
+            return
+        scale = 2 ** self._zoom
+        self._pan[0] = min(max(self._pan[0] + dx / scale, -0.5), 0.5)
+        self._pan[1] = min(max(self._pan[1] + dy / scale, -0.5), 0.5)
+        self._set_prop("video_pan_x", self._pan[0])
+        self._set_prop("video_pan_y", self._pan[1])
+
+    def _on_seek_hover(self, ratio: float, pos) -> None:
+        if self._duration > 0:
+            self.seek_preview.show_at(self._current, ratio * self._duration, pos)
+
+    # ------------------------------------------------------------------ 영상 보정 / 확대 / 회전
+    VIDEO_LABELS = {"brightness": "밝기", "contrast": "명암", "saturation": "채도", "gamma": "감마"}
+
+    def adjust_video(self, prop: str, delta: int) -> None:
+        value = min(max(int(getattr(self.player, prop) or 0) + delta, -100), 100)
+        self._set_prop(prop, value)
+        self.osd(f"{self.VIDEO_LABELS[prop]} {value:+d}")
+
+    def show_video_adjust(self) -> None:
+        VideoAdjustDialog(self.player, self).show()
+
+    def change_zoom(self, delta: float) -> None:
+        self._zoom = round(min(max(self._zoom + delta, 0.0), 3.0), 2)
+        self._set_prop("video_zoom", self._zoom)
+        if self._zoom == 0:
+            self._pan = [0.0, 0.0]
+            self._set_prop("video_pan_x", 0)
+            self._set_prop("video_pan_y", 0)
+        self.osd(f"화면 확대 {2 ** self._zoom * 100:.0f}%" + ("  (끌어서 이동)" if self._zoom > 0 else ""))
+
+    def reset_zoom(self) -> None:
+        self._zoom = 0.1
+        self.change_zoom(-0.1)
+
+    def rotate(self) -> None:
+        angle = (int(self.player.video_rotate or 0) + 90) % 360
+        self._set_prop("video_rotate", angle)
+        self.osd(f"회전 {angle}°")
+
+    def toggle_flip(self, name: str, action: QAction) -> None:
+        try:
+            self.player.command("vf", "toggle", name)
+        except SystemError:
+            return
+        self.osd(("좌우" if name == "hflip" else "상하") + (" 반전" if action.isChecked() else " 반전 해제"))
+
+    def reset_transform(self) -> None:
+        self._set_prop("video_rotate", 0)
+        try:
+            self.player.command("vf", "clr", "")
+        except SystemError:
+            pass
+        self.a_hflip.setChecked(False)
+        self.a_vflip.setChecked(False)
+        self.osd("회전·반전 초기화")
+
+    # ------------------------------------------------------------------ 책갈피 / 캡처
+    def add_bookmark(self) -> None:
+        if not self._current or "://" in self._current:
+            return
+        self.db.add_bookmark(self._current, self._time)
+        self.osd(f"책갈피 추가 {fmt_time(self._time)}  (관리: Ctrl+B)")
+
+    def _fill_bookmark_menu(self) -> None:
+        m = self.bookmark_menu
+        m.clear()
+        m.addActions([self.a_bookmark_add, self.a_bookmarks])
+        marks = self.db.bookmarks(self._current) if self._current else []
+        if marks:
+            m.addSeparator()
+        for _id, pos, name in marks:
+            m.addAction(f"{fmt_time(pos)}  {name}".rstrip(), lambda p=pos: self.seek(p, absolute=True))
+
+    def show_bookmarks(self) -> None:
+        if not self._current:
+            return
+        dlg = BookmarksDialog(self.db, self._current, self)
+        dlg.jump.connect(lambda p: self.seek(p, absolute=True))
+        dlg.show()
+
+    def burst_capture(self) -> None:
+        if not self._current:
+            return
+        count, ok = QInputDialog.getInt(self, "연속 캡처", "몇 장을 찍을까요?", 10, 2, 200)
+        if not ok:
+            return
+        interval, ok = QInputDialog.getDouble(self, "연속 캡처", "간격 (초):", 1.0, 0.1, 60, 1)
+        if not ok:
+            return
+        self._burst_left = count
+        self._burst_timer = QTimer(self, interval=int(interval * 1000))
+        self._burst_timer.timeout.connect(self._burst_tick)
+        self.player.pause = False
+        self._burst_tick()
+        self._burst_timer.start()
+
+    def _burst_tick(self) -> None:
+        if self._burst_left <= 0 or not self._current:
+            self._burst_timer.stop()
+            self.osd("연속 캡처를 마쳤습니다 (바탕화면)")
+            return
+        self.player.screenshot()
+        self._burst_left -= 1
+        self.osd(f"연속 캡처 · 남은 {self._burst_left}장")
+
+    def make_contact_sheet(self) -> None:
+        path, duration = self._current, self._duration
+        if not path or "://" in path or duration <= 0:
+            QMessageBox.information(self, "장면 모음", "먼저 동영상을 재생해 주세요.")
+            return
+        ffmpeg = find_ffmpeg()
+        if not ffmpeg:
+            QMessageBox.critical(self, "장면 모음", "변환 도구(ffmpeg)를 찾지 못했습니다.")
+            return
+        default = os.path.splitext(path)[0] + "_장면모음.jpg"
+        out, _ = QFileDialog.getSaveFileName(self, "장면 모음 저장", default,
+                                             "JPEG 이미지 (*.jpg);;PNG 이미지 (*.png)")
+        if not out:
+            return
+        vp = self.player.video_params or {}
+        codec = (self.player.video_codec or "").split(" / ")[0]  # 'H.264 / AVC / ...' → 'H.264'
+        info = f"{vp.get('w')}x{vp.get('h')}  {codec}".strip()
+
+        def job(worker):
+            return build_contact_sheet(
+                ffmpeg, path, duration, info, 4, 4, 360,
+                progress=lambda i, n: worker.progress.emit(f"장면 가져오는 중… ({i}/{n})", i, n),
+                cancel=worker.is_cancelled)
+
+        def done(img):
+            if img.save(out, quality=90):
+                if QMessageBox.question(self, "장면 모음",
+                                        f"저장했습니다.\n{out}\n\n파일 위치를 열까요?") == QMessageBox.Yes:
+                    reveal_in_file_manager(out)
+            else:
+                QMessageBox.warning(self, "장면 모음", f"저장하지 못했습니다:\n{out}")
+
+        self._sheet_worker = run_with_progress(self, "장면 모음 만들기", job, done,
+                                               lambda msg: QMessageBox.critical(self, "장면 모음", msg))
+
+    # ------------------------------------------------------------------ 소리
+    def apply_audio(self, announce: bool = True) -> None:
+        self._set_prop("af", build_audio_filter(self._audio))
+        self.a_normalize.setChecked(self._audio.normalize)
+        if announce:
+            self.osd("소리 효과 적용" if not self._audio.is_default() else "소리 효과 끔")
+
+    def toggle_normalize(self) -> None:
+        self._audio.normalize = self.a_normalize.isChecked()
+        self.apply_audio(announce=False)
+        self.osd("소리 크기 자동 맞춤 켜짐" if self._audio.normalize else "소리 크기 자동 맞춤 꺼짐")
+
+    def show_audio_dialog(self) -> None:
+        dlg = AudioDialog(self._audio, float(self.player.audio_delay or 0), self)
+
+        def changed(settings):
+            self._audio = settings
+            self.apply_audio(announce=False)
+
+        dlg.changed.connect(changed)
+        dlg.delay_changed.connect(lambda d: self._set_prop("audio_delay", d))
+        dlg.show()
+
+    def change_audio_delay(self, delta: float | None) -> None:
+        d = 0.0 if delta is None else round(float(self.player.audio_delay or 0) + delta, 2)
+        self._set_prop("audio_delay", d)
+        self.osd(f"소리 싱크 {d:+.1f}초")
+
+    # ------------------------------------------------------------------ 자막 모양
+    def apply_sub_style(self, style: dict) -> None:
+        self._sub_style = {**SUB_DEFAULTS, **style}
+        st = self._sub_style
+        p = self.player
+
+        def opt(name, value):
+            try:
+                p[name] = value
+            except Exception:
+                pass  # 재생 엔진 버전에 없는 옵션은 건너뜀
+
+        if st["font"]:
+            opt("sub-font", st["font"])
+        opt("sub-font-size", int(st["size"]))
+        opt("sub-color", st["color"])
+        opt("sub-border-color", st["border_color"])
+        opt("sub-border-size", float(st["border_size"]))
+        opt("sub-pos", int(st["position"]))
+        opt("sub-ass-override", "force" if st["override_ass"] else "scale")
+        if st["background"]:
+            opt("sub-back-color", "#99000000")
+            opt("sub-border-style", "background-box")
+        else:
+            opt("sub-border-style", "outline-and-shadow")
+
+    def show_sub_style(self) -> None:
+        dlg = SubtitleStyleDialog(self._sub_style, self)
+        dlg.changed.connect(self.apply_sub_style)
+        dlg.show()
+
+    # ------------------------------------------------------------------ 환경 설정
+    def _shortcut_actions(self) -> list[QAction]:
+        return [a for name, a in vars(self).items() if name.startswith("a_") and isinstance(a, QAction)]
+
+    def apply_shortcuts(self, overrides: dict) -> None:
+        for a in self._shortcut_actions():
+            key = overrides.get(a.objectName())
+            if key is not None:
+                a.setShortcut(QKeySequence(key))
+
+    def show_preferences(self) -> None:
+        dlg = PreferencesDialog(self._shortcut_actions(), self._default_shortcuts, self._mouse, self)
+        if dlg.exec() != PreferencesDialog.Accepted:
+            return
+        keys = dlg.shortcuts()
+        self.apply_shortcuts(keys)
+        changed = {k: v for k, v in keys.items() if v != self._default_shortcuts.get(k, "")}
+        self.settings.setValue("shortcuts", json.dumps(changed))
+        self._mouse = dlg.mouse()
+        self.settings.setValue("mouse", json.dumps(self._mouse))
+        self.osd("설정을 적용했습니다")
 
     # ------------------------------------------------------------------ 구간 잘라 이어 보기
     def mark_in(self) -> None:

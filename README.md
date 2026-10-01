@@ -19,6 +19,17 @@ Windows, macOS, Linux에서 동작합니다 (Python + Qt(PySide6) + libmpv).
 - 오디오 트랙 선택, 배속(0.1~4배), A-B 구간 반복, 프레임 단위 이동, 화면 비율, 스크린샷
 - 전체화면(컨트롤 자동 숨김), 항상 위, 최근 파일, URL 스트림 열기
 
+### 편의 기능
+- **탐색 바 미리보기**: 탐색 바에 마우스를 올리면 그 시점 장면을 작게 보여 줌
+- **영상 보정** (Ctrl+E): 밝기·명암·채도·감마 (1/2 명암, 3/4 밝기, 5/6 감마, 7/8 채도)
+- **확대/이동**: Ctrl+휠 또는 Ctrl +/-/0, 확대 중 왼쪽 버튼으로 끌어서 이동
+- **회전/반전**: Ctrl+R 90° 회전, 좌우·상하 반전
+- **책갈피**: B 추가, Ctrl+B 관리 (이름 붙이기, 이동, 삭제), 재생 → 책갈피 메뉴에서 바로 이동
+- **캡처**: 스크린샷(S), 연속 캡처(장수·간격 지정), 장면 모음(영상 전체 16장면을 한 장의 이미지로)
+- **소리**: 소리 크기 자동 맞춤(N), 이퀄라이저(저음/고음, 프리셋), 소리 싱크 (Ctrl+[ / ] / Backspace)
+- **자막 모양**: 글꼴, 크기, 글자색, 테두리, 세로 위치, 배경 상자, ASS 자막에도 적용
+- **환경 설정** (Ctrl+,): 모든 단축키 바꾸기, 마우스(클릭/더블클릭/가운데/휠/Ctrl+휠) 동작 지정
+
 ### PIP (화면 속 화면)
 - **화면 → PIP → PIP로 파일 열기**(Ctrl+P): 메인 영상 위에 작은 영상 창을 최대 4개까지 띄웁니다.
   제목 줄을 끌어 옮기고, 오른쪽 아래 모서리로 크기를 바꿉니다. 소리는 기본으로 꺼져 있습니다.
@@ -60,6 +71,10 @@ Windows, macOS, Linux에서 동작합니다 (Python + Qt(PySide6) + libmpv).
 | F9 | 재생목록 | Ctrl + L / Ctrl + D | 라이브러리 / 중복 정리 |
 | I / O | 구간 시작점 / 끝점 | F10 | 구간 목록 |
 | Ctrl + P | PIP로 파일 열기 | | |
+| 1~8 | 명암·밝기·감마·채도 | Ctrl + 휠 | 확대/축소 |
+| Ctrl + R | 90° 회전 | B / Ctrl + B | 책갈피 추가/관리 |
+| N | 소리 크기 자동 맞춤 | Ctrl + [ / ] | 소리 싱크 |
+| Ctrl + E | 영상 보정 | Ctrl + , | 환경 설정 |
 
 ## 개발 환경에서 실행
 
@@ -79,13 +94,13 @@ pytest            # 라이브러리/중복 정리 로직 테스트
 
 | OS | 명령 | 결과 |
 |---|---|---|
-| Windows | `python packaging/build.py` 다음 `iscc packaging\windows\rumi.iss` | `dist/RumiSetup-0.2.2.exe` (시작 메뉴, 파일 연결 선택) |
+| Windows | `python packaging/build.py` 다음 `iscc packaging\windows\rumi.iss` | `dist/RumiSetup-0.3.0.exe` (시작 메뉴, 파일 연결 선택) |
 | macOS | `python packaging/build.py` | `dist/Rumi.app` |
 | Linux | `python packaging/build.py` | `dist/Rumi/Rumi` |
 
 Windows에서는 `libmpv-2.dll`을 `packaging/windows/` 아래 아무 곳에 두거나, `RUMI_LIBMPV` 환경 변수로 경로를 지정하세요.
 
-각 OS에서 직접 빌드하지 않아도 됩니다. GitHub의 **Actions → build → Run workflow**를 실행하면(또는 `v0.2.2` 같은 태그를 푸시하면) 세 OS용 설치 파일이 한 번에 만들어집니다.
+각 OS에서 직접 빌드하지 않아도 됩니다. GitHub의 **Actions → build → Run workflow**를 실행하면(또는 `v0.3.0` 같은 태그를 푸시하면) 세 OS용 설치 파일이 한 번에 만들어집니다.
 
 ## 데이터 위치
 

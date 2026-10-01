@@ -38,6 +38,12 @@ def main() -> int:
     app.setApplicationName(APP_NAME)
     app.setOrganizationName(APP_NAME)
 
+    # Qt 기본 대화상자 버튼(닫기/확인/취소 등)을 한국어로
+    from PySide6.QtCore import QLibraryInfo, QTranslator
+    translator = QTranslator(app)
+    if translator.load("qtbase_ko", QLibraryInfo.path(QLibraryInfo.TranslationsPath)):
+        app.installTranslator(translator)
+
     try:
         from .ui.main_window import MainWindow
     except OSError as e:  # libmpv 를 찾지 못함

@@ -65,6 +65,14 @@ CREATE TABLE IF NOT EXISTS videos (
 );
 CREATE INDEX IF NOT EXISTS idx_videos_size ON videos(size);
 CREATE INDEX IF NOT EXISTS idx_videos_full_hash ON videos(full_hash);
+CREATE TABLE IF NOT EXISTS bookmarks (
+    id       INTEGER PRIMARY KEY,
+    path     TEXT NOT NULL,
+    position REAL NOT NULL,
+    name     TEXT NOT NULL DEFAULT '',
+    created  REAL NOT NULL
+);
+CREATE INDEX IF NOT EXISTS idx_bookmarks_path ON bookmarks(path);
 CREATE TABLE IF NOT EXISTS playback (
     path       TEXT PRIMARY KEY,
     position   REAL NOT NULL,
@@ -190,3 +198,21 @@ class LibraryDB:
 
     def clear_position(self, path: str) -> None:
         self._exec("DELETE FROM playback WHERE path=?", (path,))
+
+    # ---- 책갈피 ----
+    def add_bookmark(self, path: str, position: float, name: str = "") -> int:
+        cur = self._exec("INSERT INTO bookmarks(path, position, name, created) VALUES (?, ?, ?, ?)",
+                         (path, position, name, time.time()))
+        return cur.lastrowid
+
+    def bookmarks(self, path: str) -> list[tuple[int, float, str]]:
+        """(id, 위치, 이름) — 위치 순."""
+        rows = self._query("SELECT id, position, name FROM bookmarks WHERE path=? ORDER BY position", (path,))
+        return [(r["id"], r["position"], r["name"]) for r in rows]
+
+    def rename_bookmark(self, bookmark_id: int, name: str) -> None:
+        self._exec("UPDATE bookmarks SET name=? WHERE id=?", (name, bookmark_id))
+
+    def delete_bookmark(self, bookmark_id: int) -> None:
+        self._exec("DELETE FROM bookmarks WHERE id=?", (bookmark_id,))
+

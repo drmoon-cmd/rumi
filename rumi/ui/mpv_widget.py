@@ -65,7 +65,9 @@ class MpvWidget(QOpenGLWidget):
     clicked = Signal()
     context_menu_requested = Signal(object)  # 전역 좌표 QPoint
     double_clicked = Signal()
-    wheel_scrolled = Signal(int)
+    middle_clicked = Signal()
+    wheel_scrolled = Signal(int, bool)   # 방향(+1/-1), Ctrl 눌림
+    dragged = Signal(float, float)       # 왼쪽 버튼으로 끈 거리 (위젯 크기 대비 비율)
 
     def __init__(self, parent=None):
         super().__init__(parent)
@@ -83,6 +85,9 @@ class MpvWidget(QOpenGLWidget):
             sub_auto="fuzzy",
             sub_codepage="auto",
             screenshot_directory="~~desktop/",
+            # 파일 이름: Rumi_영상이름_00-01-23-456.png (Windows 에서 쓸 수 없는 ':' 대신 '-')
+            screenshot_template="Rumi_%F_%wH-%wM-%wS-%wT",
+            screenshot_format="png",
             osd_font_size=36,
             ytdl="no",
             log_handler=self._on_log,
@@ -248,13 +253,33 @@ class MpvWidget(QOpenGLWidget):
         self.player.terminate()
 
     # ---- 마우스 ----
+    def mousePressEvent(self, e):
+        if e.button() == Qt.LeftButton:
+            self._press_pos = e.position()
+            self._last_drag_pos = e.position()
+            self._dragging = False
+        super().mousePressEvent(e)
+
     def mouseMoveEvent(self, e):
         self.mouse_moved.emit()
+        press = getattr(self, "_press_pos", None)
+        if press is not None and e.buttons() & Qt.LeftButton:
+            if not self._dragging and (e.position() - press).manhattanLength() > 6:
+                self._dragging = True
+            if self._dragging:
+                d = e.position() - self._last_drag_pos
+                self._last_drag_pos = e.position()
+                self.dragged.emit(d.x() / max(self.width(), 1), d.y() / max(self.height(), 1))
         super().mouseMoveEvent(e)
 
     def mouseReleaseEvent(self, e):
         if e.button() == Qt.LeftButton:
-            self.clicked.emit()
+            dragged = getattr(self, "_dragging", False)
+            self._press_pos, self._dragging = None, False
+            if not dragged:  # 끌어서 화면을 옮긴 경우는 클릭으로 치지 않음
+                self.clicked.emit()
+        elif e.button() == Qt.MiddleButton:
+            self.middle_clicked.emit()
         elif e.button() == Qt.RightButton:
             self.context_menu_requested.emit(e.globalPosition().toPoint())
         super().mouseReleaseEvent(e)
@@ -264,4 +289,6 @@ class MpvWidget(QOpenGLWidget):
             self.double_clicked.emit()
 
     def wheelEvent(self, e):
-        self.wheel_scrolled.emit(1 if e.angleDelta().y() > 0 else -1)
+        if e.angleDelta().y():
+            self.wheel_scrolled.emit(1 if e.angleDelta().y() > 0 else -1,
+                                     bool(e.modifiers() & Qt.ControlModifier))
