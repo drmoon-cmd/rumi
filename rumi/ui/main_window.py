@@ -3,12 +3,13 @@
 from __future__ import annotations
 
 import os
+import platform
 from pathlib import Path
 
-from PySide6.QtCore import QSettings, QStandardPaths, Qt, QTimer
+from PySide6.QtCore import QSettings, QStandardPaths, Qt, QTimer, qVersion
 from PySide6.QtGui import QAction, QActionGroup, QKeySequence
 from PySide6.QtWidgets import (
-    QDockWidget, QFileDialog, QInputDialog, QMainWindow, QMessageBox, QWidget,
+    QApplication, QDockWidget, QFileDialog, QInputDialog, QMainWindow, QMessageBox, QWidget,
 )
 
 from .. import APP_NAME, __version__
@@ -187,6 +188,8 @@ class MainWindow(QMainWindow):
 
         self.a_keys = A("단축키 안내", self.show_shortcuts, "F1")
         self.a_about = A(f"{APP_NAME} 정보", self.show_about)
+        self.a_diag = A("진단 정보 복사", self.copy_diagnostics)
+        self.a_compat = A("호환 모드 (화면이 깨지거나 검게 나올 때)", lambda: self.set_compat_mode(), checkable=True)
 
     def _build_menus(self) -> None:
         mb = self.menuBar()
@@ -242,6 +245,7 @@ class MainWindow(QMainWindow):
             a.setCheckable(True)
             a.setData(value)
             self.hwdec_group.addAction(a)
+        m.addAction(self.a_compat)
         m.addSeparator()
         m.addAction(self.a_screenshot)
 
@@ -249,7 +253,7 @@ class MainWindow(QMainWindow):
         m.addActions([self.a_library, self.a_dupes])
 
         m = mb.addMenu("도움말(&H)")
-        m.addActions([self.a_keys, self.a_about])
+        m.addActions([self.a_keys, self.a_diag, self.a_about])
 
         self._rebuild_track_menus([])
 
@@ -266,6 +270,7 @@ class MainWindow(QMainWindow):
         v.load_failed.connect(self._on_load_failed)
         v.tracks_changed.connect(self._rebuild_track_menus)
         v.sub_text_changed.connect(self._check_data_subtitle)
+        v.renderer_ready.connect(lambda: self.a_compat.setChecked(v.compat_mode))
         v.clicked.connect(self.toggle_pause)
         v.double_clicked.connect(self.toggle_fullscreen)
         v.wheel_scrolled.connect(lambda d: self.change_volume(5 * d))
@@ -294,7 +299,10 @@ class MainWindow(QMainWindow):
         if state := s.value("windowState"):
             self.restoreState(state)
         self.player.volume = float(s.value("volume", 100))
-        self.set_hwdec(s.value("hwdec", DEFAULT_HWDEC), announce=False)
+        # 0.1.1 까지 저장된 'hwdec' 값은 무시하고 새 기본값(끄기)부터 시작한다
+        self.set_hwdec(s.value("hwdecMode", DEFAULT_HWDEC), announce=False)
+        self.a_compat.setChecked(s.value("compatMode", False, type=bool))
+        self.set_compat_mode(announce=False)
         self.playlist.set_repeat_mode(s.value("repeat", "none"))
 
 
@@ -311,7 +319,8 @@ class MainWindow(QMainWindow):
         s.setValue("windowState", self.saveState())
         s.setValue("volume", self.player.volume)
         s.setValue("repeat", self.playlist.repeat_mode().value)
-        s.setValue("hwdec", self._hwdec)
+        s.setValue("hwdecMode", self._hwdec)
+        s.setValue("compatMode", self.a_compat.isChecked())
         if self._library:
             self._library.close()
         self.video.shutdown()
@@ -473,6 +482,39 @@ class MainWindow(QMainWindow):
             a.setChecked(a.data() == mode)
         if announce:
             self.osd(f"하드웨어 가속: {HWDEC_MODES[mode]}")
+
+    def set_compat_mode(self, announce: bool = True) -> None:
+        self.video.set_compat_mode(self.a_compat.isChecked())
+        if self.video.software_rendering:
+            self.a_compat.setChecked(True)
+        if announce:
+            self.osd("호환 모드 켜짐" if self.video.compat_mode else "호환 모드 꺼짐")
+
+    def copy_diagnostics(self) -> None:
+        p = self.player
+
+        def prop(name):
+            try:
+                return getattr(p, name.replace("-", "_"))
+            except Exception:
+                return None
+
+        vp = prop("video-params") or {}
+        info = "\n".join([
+            f"{APP_NAME} {__version__}",
+            f"OS: {platform.platform()}",
+            f"Qt: {qVersion()}",
+            f"mpv: {prop('mpv-version')}",
+            f"OpenGL: {self.video.gl_renderer or '(초기화 전)'}",
+            f"하드웨어 가속 설정: {self._hwdec} / 실제 사용: {prop('hwdec-current') or 'no'}",
+            f"호환 모드: {'켜짐' if self.video.compat_mode else '꺼짐'}",
+            f"영상 코덱: {prop('video-codec')}",
+            f"영상 형식: {vp.get('w')}x{vp.get('h')} {vp.get('pixelformat')}",
+            f"재생 위치: {fmt_time(self._time)} / {fmt_time(self._duration or None)}",
+        ])
+        QApplication.clipboard().setText(info)
+        QMessageBox.information(self, "진단 정보",
+                                "아래 내용을 복사했습니다. 그대로 붙여 넣어 보내 주세요.\n\n" + info)
 
     # ------------------------------------------------------------------ 자막/트랙
     def load_subtitle_dialog(self) -> None:

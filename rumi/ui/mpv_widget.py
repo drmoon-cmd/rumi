@@ -20,14 +20,19 @@ import mpv
 SOFTWARE_RENDERERS = ("llvmpipe", "softpipe", "swrast", "gdi generic", "microsoft basic render")
 GL_RENDERER = 0x1F01
 
-# 하드웨어 디코딩 방식. 'auto-safe'(제로카피)는 일부 Windows 그래픽 드라이버에서
-# 영상에 가로 줄 노이즈가 생기므로, 디코딩 결과를 메모리로 복사하는 방식을 기본으로 한다.
+# 하드웨어(GPU) 디코딩. 일부 그래픽 드라이버에서 탐색/이어보기 뒤 영상에 줄 노이즈가 생기므로
+# mpv 와 같이 기본은 끄고(소프트웨어 디코딩), 필요한 사람만 켜도록 한다.
 HWDEC_MODES = {
-    "auto-copy-safe": "자동 (권장)",
-    "auto-safe": "자동 - 빠름 (일부 PC에서 화면 깨짐)",
-    "no": "끄기 (소프트웨어 디코딩)",
+    "no": "끄기 (권장, 가장 안정적)",
+    "auto-copy-safe": "켜기 - 복사 방식",
+    "auto-safe": "켜기 - 빠름 (일부 PC에서 화면 깨짐)",
 }
-DEFAULT_HWDEC = "auto-copy-safe"
+DEFAULT_HWDEC = "no"
+
+# 'fast' 프로필이 바꾸는 렌더링 옵션. 호환 모드를 끌 때 원래 값으로 되돌리기 위해 기억해 둔다.
+COMPAT_OPTIONS = ("scale", "dscale", "cscale", "dither", "correct-downscaling",
+                  "linear-downscaling", "sigmoid-upscaling", "hdr-compute-peak",
+                  "allow-delayed-peak-detect")
 
 
 def _get_proc_address(_ctx, name: bytes) -> int:
@@ -52,6 +57,7 @@ class MpvWidget(QOpenGLWidget):
     load_failed = Signal(str)
     tracks_changed = Signal(list)
     sub_text_changed = Signal(str)
+    renderer_ready = Signal()
 
     mouse_moved = Signal()
     clicked = Signal()
@@ -78,6 +84,14 @@ class MpvWidget(QOpenGLWidget):
         )
         self._render_ctx: mpv.MpvRenderContext | None = None
         self.software_rendering = False
+        self.gl_renderer = ""
+        self.compat_mode = False
+        self._quality_defaults = {}
+        for name in COMPAT_OPTIONS:
+            try:
+                self._quality_defaults[name] = self.player[name]
+            except (AttributeError, KeyError, TypeError, SystemError):
+                pass
         self._proc_fn = mpv.MpvGlGetProcAddressFn(_get_proc_address)
         self._frame_ready.connect(self.update, Qt.QueuedConnection)
         self.setMouseTracking(True)
@@ -117,10 +131,11 @@ class MpvWidget(QOpenGLWidget):
 
     # ---- OpenGL ----
     def initializeGL(self) -> None:
-        renderer = (QOpenGLFunctions(QOpenGLContext.currentContext()).glGetString(GL_RENDERER) or "").lower()
-        self.software_rendering = any(name in renderer for name in SOFTWARE_RENDERERS)
+        self.gl_renderer = QOpenGLFunctions(QOpenGLContext.currentContext()).glGetString(GL_RENDERER) or ""
+        self.software_rendering = any(name in self.gl_renderer.lower() for name in SOFTWARE_RENDERERS)
         if self.software_rendering:
-            self.player.command("apply-profile", "fast")
+            self.set_compat_mode(True)
+        self.renderer_ready.emit()
         self._render_ctx = mpv.MpvRenderContext(
             self.player, "opengl",
             opengl_init_params={"get_proc_address": self._proc_fn},
@@ -139,6 +154,19 @@ class MpvWidget(QOpenGLWidget):
                 "fbo": self.defaultFramebufferObject(),
             },
         )
+
+    def set_compat_mode(self, on: bool) -> None:
+        """호환 모드: 가벼운 스케일러로 그래픽 부담을 줄인다 (화면이 깨지거나 검게 나올 때)."""
+        on = on or self.software_rendering
+        self.compat_mode = on
+        if on:
+            self.player.command("apply-profile", "fast")
+        else:
+            for name, value in self._quality_defaults.items():
+                try:
+                    self.player[name] = value
+                except (AttributeError, KeyError, TypeError, SystemError):
+                    pass
 
     def shutdown(self) -> None:
         """창을 닫기 전에 호출. 렌더 컨텍스트는 GL 컨텍스트가 활성일 때 해제해야 한다."""
