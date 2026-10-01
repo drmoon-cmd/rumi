@@ -7,10 +7,11 @@ import os
 from PySide6.QtCore import QPoint, Qt, Signal
 from PySide6.QtGui import QCursor
 from PySide6.QtWidgets import (
-    QCheckBox, QFileDialog, QFrame, QHBoxLayout, QLabel, QMenu, QSizeGrip, QStyle, QToolButton,
+    QCheckBox, QFileDialog, QFrame, QHBoxLayout, QLabel, QMenu, QSizeGrip, QToolButton,
     QVBoxLayout, QWidget,
 )
 
+from .icons import make_icon
 from .mpv_widget import MpvWidget
 
 MAX_PIPS = 4
@@ -77,7 +78,6 @@ class PipView(QFrame):
         self.sync.setChecked(sync)
         self.sync.setFocusPolicy(Qt.NoFocus)
         self.sync.toggled.connect(lambda on: self.sync_toggled.emit(self, on))
-        st = self.style()
         self.btn_sound = QToolButton()
         self.btn_sound.setAutoRaise(True)
         self.btn_sound.setToolTip("PIP 소리 켜기/끄기")
@@ -85,7 +85,7 @@ class PipView(QFrame):
         self.btn_sound.clicked.connect(self.toggle_sound)
         close = QToolButton()
         close.setAutoRaise(True)
-        close.setIcon(st.standardIcon(QStyle.SP_TitleBarCloseButton))
+        close.setIcon(make_icon("close", "#ffffff"))
         close.setToolTip("PIP 닫기")
         close.setFocusPolicy(Qt.NoFocus)
         close.clicked.connect(self.close_pip)
@@ -125,6 +125,9 @@ class PipView(QFrame):
             self.player.pause = not self.player.pause
 
     def show_menu(self, global_pos: QPoint | None = None) -> None:
+        self.build_menu().exec(global_pos or QCursor.pos())
+
+    def build_menu(self) -> QMenu:
         menu = QMenu(self)
         paused = bool(self.player.pause)
         menu.addAction("재생" if paused else "일시정지", self.toggle_pause)
@@ -145,7 +148,7 @@ class PipView(QFrame):
             corner.addAction(label, lambda c=label: self.move_to_corner(c))
         menu.addSeparator()
         menu.addAction("PIP 닫기", self.close_pip)
-        menu.exec(global_pos or QCursor.pos())
+        return menu
 
     def _open_other(self) -> None:
         start = os.path.dirname(self.path) if self.path else ""
@@ -171,8 +174,7 @@ class PipView(QFrame):
         self._update_sound_icon()
 
     def _update_sound_icon(self) -> None:
-        icon = QStyle.SP_MediaVolumeMuted if self.player.mute else QStyle.SP_MediaVolume
-        self.btn_sound.setIcon(self.style().standardIcon(icon))
+        self.btn_sound.setIcon(make_icon("mute" if self.player.mute else "volume", "#ffffff"))
 
     def move_within_parent(self, pos: QPoint) -> None:
         p = self.parentWidget()

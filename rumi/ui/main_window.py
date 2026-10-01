@@ -26,6 +26,7 @@ from ..tools import find_ffmpeg
 from .clips_panel import ClipsPanel
 from .pip import MAX_PIPS, PipView
 from .playlist import PlaylistPanel
+from .theme import DEFAULT_THEME, THEMES, apply_theme
 from .util import fmt_time
 
 SUBTITLE_EXTENSIONS = {".srt", ".smi", ".sami", ".ass", ".ssa", ".vtt", ".sub", ".idx", ".sup"}
@@ -101,6 +102,7 @@ class MainWindow(QMainWindow):
         self.setWindowTitle(APP_NAME)
         self.setAcceptDrops(True)
         self.settings = QSettings()
+        self._theme = apply_theme(QApplication.instance(), self.settings.value("theme", DEFAULT_THEME))
         self.db = LibraryDB(data_dir() / "library.sqlite3")
         self._library: LibraryWindow | None = None
         self._current: str | None = None
@@ -281,6 +283,13 @@ class MainWindow(QMainWindow):
             a.setData(value)
             self.hwdec_group.addAction(a)
         m.addAction(self.a_compat)
+        theme = m.addMenu("테마")
+        self.theme_group = QActionGroup(self)
+        for key, label in THEMES.items():
+            a = theme.addAction(label, lambda k=key: self.set_theme(k))
+            a.setCheckable(True)
+            a.setChecked(key == self._theme)
+            self.theme_group.addAction(a)
         m.addSeparator()
         pip = m.addMenu("PIP (화면 속 화면)")
         pip.addActions([self.a_pip_open, self.a_pip_current, self.a_pip_auto, self.a_pip_close])
@@ -531,7 +540,19 @@ class MainWindow(QMainWindow):
         for a in self.hwdec_group.actions():
             a.setChecked(a.data() == mode)
         if announce:
-            self.osd(f"하드웨어 가속: {HWDEC_MODES[mode]}")
+            msg = f"하드웨어 가속: {HWDEC_MODES[mode]}"
+            # 일부 그래픽 드라이버는 하드웨어 가속 + 고화질 스케일러 조합에서 화면이 깨진다.
+            # 호환 모드를 함께 켜면 해결되므로 하드웨어 가속을 켤 때 같이 켠다 (원하면 다시 끌 수 있음).
+            if mode != "no" and not self.a_compat.isChecked():
+                self.a_compat.setChecked(True)
+                self.set_compat_mode(announce=False)
+                msg += " · 호환 모드도 함께 켰습니다"
+            self.osd(msg)
+
+    def set_theme(self, name: str) -> None:
+        self._theme = apply_theme(QApplication.instance(), name)
+        self.settings.setValue("theme", self._theme)
+        self.controls.refresh_icons()
 
     def set_compat_mode(self, announce: bool = True) -> None:
         self.video.set_compat_mode(self.a_compat.isChecked())

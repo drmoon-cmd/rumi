@@ -4,9 +4,10 @@ from __future__ import annotations
 
 from PySide6.QtCore import Qt, Signal
 from PySide6.QtWidgets import (
-    QHBoxLayout, QLabel, QSlider, QStyle, QToolButton, QVBoxLayout, QWidget,
+    QApplication, QHBoxLayout, QLabel, QSlider, QToolButton, QVBoxLayout, QWidget,
 )
 
+from .icons import make_icon
 from .util import fmt_time
 
 
@@ -54,32 +55,36 @@ class ControlBar(QWidget):
 
     def __init__(self, parent=None):
         super().__init__(parent)
+        self.setObjectName("controlBar")
+        self.setAttribute(Qt.WA_StyledBackground, True)
         self.setAutoFillBackground(True)
         self._duration = 0.0
 
         self.seek = SeekSlider()
+        self.seek.setObjectName("seekSlider")
         self.seek.seek_requested.connect(self.seek_ratio)
         self.time_label = QLabel("--:-- / --:--")
         self.speed_label = QLabel("")
 
-        st = self.style()
+        self._paused, self._muted = True, False
+        self._icons: dict[QToolButton, str] = {}
 
         def button(icon, tip, signal):
             b = QToolButton()
-            b.setIcon(st.standardIcon(icon))
+            self._icons[b] = icon
             b.setToolTip(tip)
             b.setAutoRaise(True)
             b.setFocusPolicy(Qt.NoFocus)
             b.clicked.connect(signal)
             return b
 
-        self.btn_play = button(QStyle.SP_MediaPlay, "재생/일시정지 (Space)", self.play_pause)
-        btn_stop = button(QStyle.SP_MediaStop, "정지", self.stop)
-        btn_prev = button(QStyle.SP_MediaSkipBackward, "이전 파일 (PgUp)", self.prev)
-        btn_next = button(QStyle.SP_MediaSkipForward, "다음 파일 (PgDn)", self.next)
-        self.btn_mute = button(QStyle.SP_MediaVolume, "음소거 (M)", self.mute_toggle)
-        btn_list = button(QStyle.SP_FileDialogListView, "재생목록 (F9)", self.playlist_toggle)
-        btn_full = button(QStyle.SP_TitleBarMaxButton, "전체화면 (Enter)", self.fullscreen_toggle)
+        self.btn_play = button("play", "재생/일시정지 (Space)", self.play_pause)
+        btn_stop = button("stop", "정지", self.stop)
+        btn_prev = button("prev", "이전 파일 (PgUp)", self.prev)
+        btn_next = button("next", "다음 파일 (PgDn)", self.next)
+        self.btn_mute = button("volume", "음소거 (M)", self.mute_toggle)
+        btn_list = button("list", "재생목록 (F9)", self.playlist_toggle)
+        btn_full = button("fullscreen", "전체화면 (Enter)", self.fullscreen_toggle)
 
         self.volume = QSlider(Qt.Horizontal)
         self.volume.setRange(0, 130)
@@ -111,6 +116,7 @@ class ControlBar(QWidget):
         lay.addLayout(row)
 
         self.seek.setFocusPolicy(Qt.NoFocus)
+        self.refresh_icons()
 
     # ---- 상태 반영 ----
     def set_duration(self, d: float):
@@ -133,8 +139,9 @@ class ControlBar(QWidget):
         self.time_label.setText("--:-- / --:--")
 
     def set_paused(self, paused: bool):
-        icon = QStyle.SP_MediaPlay if paused else QStyle.SP_MediaPause
-        self.btn_play.setIcon(self.style().standardIcon(icon))
+        self._paused = paused
+        self._icons[self.btn_play] = "play" if paused else "pause"
+        self.refresh_icons()
 
     def set_volume(self, v: float):
         self.volume.blockSignals(True)
@@ -143,8 +150,15 @@ class ControlBar(QWidget):
         self.volume_label.setText(f"{int(round(v))}%")
 
     def set_muted(self, muted: bool):
-        icon = QStyle.SP_MediaVolumeMuted if muted else QStyle.SP_MediaVolume
-        self.btn_mute.setIcon(self.style().standardIcon(icon))
+        self._muted = muted
+        self._icons[self.btn_mute] = "mute" if muted else "volume"
+        self.refresh_icons()
+
+    def refresh_icons(self) -> None:
+        """테마 글자색으로 아이콘을 다시 그린다 (테마가 바뀔 때도 호출)."""
+        color = QApplication.palette().buttonText().color().name()
+        for b, kind in self._icons.items():
+            b.setIcon(make_icon(kind, color))
 
     def set_speed(self, s: float):
         self.speed_label.setText("" if abs(s - 1.0) < 1e-6 else f"{s:.2f}x")
