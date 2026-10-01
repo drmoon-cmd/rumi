@@ -16,7 +16,8 @@ from ..library import LibraryDB
 from ..library.scanner import VIDEO_EXTENSIONS
 from .controls import ControlBar
 from .library_window import LibraryWindow
-from .mpv_widget import MpvWidget
+from ..subtitles import looks_like_sensor_data
+from .mpv_widget import DEFAULT_HWDEC, HWDEC_MODES, MpvWidget
 from .playlist import PlaylistPanel
 from .util import fmt_time
 
@@ -96,6 +97,9 @@ class MainWindow(QMainWindow):
         self._was_maximized = False
         self._dock_was_visible = False
         self._closed = False
+        self._tracks: list = []
+        self._data_sub_checked = False
+        self._hwdec = DEFAULT_HWDEC
 
         self.video = MpvWidget()
         self.player = self.video.player
@@ -231,6 +235,13 @@ class MainWindow(QMainWindow):
             a.setCheckable(True)
             a.setChecked(value == "-1")
             group.addAction(a)
+        hw = m.addMenu("하드웨어 가속")
+        self.hwdec_group = QActionGroup(self)
+        for value, label in HWDEC_MODES.items():
+            a = hw.addAction(label, lambda v=value: self.set_hwdec(v))
+            a.setCheckable(True)
+            a.setData(value)
+            self.hwdec_group.addAction(a)
         m.addSeparator()
         m.addAction(self.a_screenshot)
 
@@ -254,6 +265,7 @@ class MainWindow(QMainWindow):
         v.file_loaded.connect(self._on_file_loaded)
         v.load_failed.connect(self._on_load_failed)
         v.tracks_changed.connect(self._rebuild_track_menus)
+        v.sub_text_changed.connect(self._check_data_subtitle)
         v.clicked.connect(self.toggle_pause)
         v.double_clicked.connect(self.toggle_fullscreen)
         v.wheel_scrolled.connect(lambda d: self.change_volume(5 * d))
@@ -282,6 +294,7 @@ class MainWindow(QMainWindow):
         if state := s.value("windowState"):
             self.restoreState(state)
         self.player.volume = float(s.value("volume", 100))
+        self.set_hwdec(s.value("hwdec", DEFAULT_HWDEC), announce=False)
         self.playlist.set_repeat_mode(s.value("repeat", "none"))
 
 
@@ -298,6 +311,7 @@ class MainWindow(QMainWindow):
         s.setValue("windowState", self.saveState())
         s.setValue("volume", self.player.volume)
         s.setValue("repeat", self.playlist.repeat_mode().value)
+        s.setValue("hwdec", self._hwdec)
         if self._library:
             self._library.close()
         self.video.shutdown()
@@ -357,6 +371,7 @@ class MainWindow(QMainWindow):
         self._save_position()
         self._current = path
         self._time, self._duration = 0.0, 0.0
+        self._data_sub_checked = False
         self.controls.reset()
         self.playlist.set_current(path)
         self.player.play(path)
@@ -449,6 +464,16 @@ class MainWindow(QMainWindow):
         except (SystemError, AttributeError, TypeError):
             pass
 
+    def set_hwdec(self, mode: str, announce: bool = True) -> None:
+        if mode not in HWDEC_MODES:
+            mode = DEFAULT_HWDEC
+        self._hwdec = mode
+        self._set_prop("hwdec", mode)
+        for a in self.hwdec_group.actions():
+            a.setChecked(a.data() == mode)
+        if announce:
+            self.osd(f"하드웨어 가속: {HWDEC_MODES[mode]}")
+
     # ------------------------------------------------------------------ 자막/트랙
     def load_subtitle_dialog(self) -> None:
         exts = " ".join(f"*{e}" for e in sorted(SUBTITLE_EXTENSIONS))
@@ -482,7 +507,20 @@ class MainWindow(QMainWindow):
         self.player.sub_scale = s
         self.osd(f"자막 크기 {int(s * 100)}%")
 
+    def _check_data_subtitle(self, text: str) -> None:
+        """블랙박스 영상의 G-센서 데이터 트랙이 자막으로 보이면 한 번 숨긴다 (메뉴에서 다시 켤 수 있음)."""
+        if self._data_sub_checked or not text:
+            return
+        self._data_sub_checked = True
+        if not looks_like_sensor_data(text):
+            return
+        track = next((t for t in self._tracks if t.get("type") == "sub" and t.get("selected")), None)
+        if track and not track.get("external"):
+            self._set_prop("sid", "no")
+            self.osd("센서 데이터 트랙이라 자막을 숨겼습니다 (자막 메뉴에서 다시 켤 수 있음)")
+
     def _rebuild_track_menus(self, tracks: list) -> None:
+        self._tracks = tracks
         for menu, kind, prop in ((self.audio_menu, "audio", "aid"), (self.sub_menu, "sub", "sid")):
             menu.clear()
             group = QActionGroup(menu)

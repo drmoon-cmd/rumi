@@ -20,6 +20,15 @@ import mpv
 SOFTWARE_RENDERERS = ("llvmpipe", "softpipe", "swrast", "gdi generic", "microsoft basic render")
 GL_RENDERER = 0x1F01
 
+# 하드웨어 디코딩 방식. 'auto-safe'(제로카피)는 일부 Windows 그래픽 드라이버에서
+# 영상에 가로 줄 노이즈가 생기므로, 디코딩 결과를 메모리로 복사하는 방식을 기본으로 한다.
+HWDEC_MODES = {
+    "auto-copy-safe": "자동 (권장)",
+    "auto-safe": "자동 - 빠름 (일부 PC에서 화면 깨짐)",
+    "no": "끄기 (소프트웨어 디코딩)",
+}
+DEFAULT_HWDEC = "auto-copy-safe"
+
 
 def _get_proc_address(_ctx, name: bytes) -> int:
     glctx = QOpenGLContext.currentContext()
@@ -42,6 +51,7 @@ class MpvWidget(QOpenGLWidget):
     file_loaded = Signal()
     load_failed = Signal(str)
     tracks_changed = Signal(list)
+    sub_text_changed = Signal(str)
 
     mouse_moved = Signal()
     clicked = Signal()
@@ -54,7 +64,7 @@ class MpvWidget(QOpenGLWidget):
         locale.setlocale(locale.LC_NUMERIC, "C")
         self.player = mpv.MPV(
             vo="libmpv",
-            hwdec="auto-safe",
+            hwdec=DEFAULT_HWDEC,
             keep_open="yes",
             idle="yes",
             osc="no",
@@ -90,6 +100,7 @@ class MpvWidget(QOpenGLWidget):
             "speed": lambda v: v is not None and self.speed_changed.emit(float(v)),
             "eof-reached": lambda v: v and self.eof_reached.emit(),
             "track-list": lambda v: self.tracks_changed.emit(list(v or [])),
+            "sub-text": lambda v: self.sub_text_changed.emit(str(v or "")),
         }
         for prop, fn in bind.items():
             p.observe_property(prop, lambda _name, value, fn=fn: fn(value))
