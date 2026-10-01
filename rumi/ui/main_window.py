@@ -9,9 +9,10 @@ import time
 from pathlib import Path
 
 from PySide6.QtCore import QPoint, QSettings, QStandardPaths, Qt, QTimer, qVersion
-from PySide6.QtGui import QAction, QActionGroup, QKeySequence
+from PySide6.QtGui import QAction, QActionGroup, QCursor, QKeySequence
 from PySide6.QtWidgets import (
-    QApplication, QDockWidget, QFileDialog, QInputDialog, QMainWindow, QMessageBox, QWidget,
+    QApplication, QDockWidget, QFileDialog, QHBoxLayout, QInputDialog, QLabel, QMainWindow, QMenu,
+    QMessageBox, QToolButton, QWidget,
 )
 
 from .. import APP_NAME, __version__
@@ -80,21 +81,49 @@ def data_dir() -> Path:
     return Path(QStandardPaths.writableLocation(QStandardPaths.AppDataLocation))
 
 
+class TopBar(QWidget):
+    """전체화면에서 화면 위쪽에 마우스를 대면 나타나는 제목·메뉴 줄."""
+
+    def __init__(self, parent=None):
+        super().__init__(parent)
+        self.setObjectName("topBar")
+        self.setAttribute(Qt.WA_StyledBackground, True)
+        self.setStyleSheet("#topBar { background: rgba(20, 21, 24, 225); border-bottom: 1px solid #3a3d43; }"
+                           "#topBar QLabel { color: #e6e7e9; font-weight: bold; }"
+                           "#topBar QToolButton { color: #e6e7e9; padding: 5px 10px; }")
+        self.menu_btn = QToolButton()
+        self.menu_btn.setText("☰ 메뉴")
+        self.menu_btn.setFocusPolicy(Qt.NoFocus)
+        self.title = QLabel()
+        self.exit_btn = QToolButton()
+        self.exit_btn.setText("창 모드로 (Esc)")
+        self.exit_btn.setFocusPolicy(Qt.NoFocus)
+        row = QHBoxLayout(self)
+        row.setContentsMargins(8, 4, 8, 4)
+        row.addWidget(self.menu_btn)
+        row.addSpacing(8)
+        row.addWidget(self.title, 1)
+        row.addWidget(self.exit_btn)
+        self.hide()
+
+
 class VideoArea(QWidget):
-    """영상 + 컨트롤 바. 전체화면에서는 컨트롤 바가 영상 위에 겹쳐 뜬다."""
+    """영상 + 컨트롤 바. 전체화면에서는 제목 줄과 컨트롤 바가 영상 위에 겹쳐 뜬다."""
 
     def __init__(self, video: MpvWidget, controls: ControlBar, parent=None):
         super().__init__(parent)
         self.video, self.controls = video, controls
         video.setParent(self)
         controls.setParent(self)
+        self.topbar = TopBar(self)
         self.overlay = False
         self.setObjectName("videoArea")
         self.setStyleSheet("#videoArea { background: black; }")
 
     def set_overlay(self, on: bool) -> None:
         self.overlay = on
-        self.controls.show()
+        self.controls.setVisible(not on)
+        self.topbar.hide()
         self._relayout()
 
     def resizeEvent(self, e):
@@ -107,6 +136,8 @@ class VideoArea(QWidget):
         self.video.setGeometry(0, 0, w, h if self.overlay else max(h - ch, 0))
         self.controls.setGeometry(0, h - ch, w, ch)
         self.controls.raise_()
+        self.topbar.setGeometry(0, 0, w, self.topbar.sizeHint().height())
+        self.topbar.raise_()
         for pip in self.findChildren(PipView):
             pip.move_within_parent(pip.pos())
             pip.raise_()
@@ -125,7 +156,7 @@ class MainWindow(QMainWindow):
         self._time = 0.0
         self._duration = 0.0
         self._was_maximized = False
-        self._dock_was_visible = False
+        self._docks_visible = [True, True]
         self._closed = False
         self._tracks: list = []
         self._data_sub_checked = False
@@ -411,6 +442,12 @@ class MainWindow(QMainWindow):
         c.mute_toggle.connect(self.toggle_mute)
         c.fullscreen_toggle.connect(self.toggle_fullscreen)
         c.playlist_toggle.connect(self.a_playlist.trigger)
+        v.context_menu_requested.connect(lambda pos: self.main_menu().exec(pos))
+        top = self.area.topbar
+        top.menu_btn.clicked.connect(
+            lambda: self.main_menu().exec(top.menu_btn.mapToGlobal(top.menu_btn.rect().bottomLeft())))
+        top.exit_btn.clicked.connect(self.toggle_fullscreen)
+        self.windowTitleChanged.connect(top.title.setText)
         self.seek_preview = SeekPreview(self)
         c.seek_hover.connect(self._on_seek_hover)
         c.seek_hover_end.connect(self.seek_preview.hide_preview)
@@ -1241,37 +1278,64 @@ class MainWindow(QMainWindow):
 
     # ------------------------------------------------------------------ 화면
     def toggle_fullscreen(self) -> None:
+        docks = (self.dock, self.clips_dock)
         if self.isFullScreen():
             self.menuBar().show()
-            self.dock.setVisible(self._dock_was_visible)
+            for d, visible in zip(docks, self._docks_visible):
+                d.setVisible(visible)
             self.area.set_overlay(False)
             self._hide_timer.stop()
             self.video.unsetCursor()
             self.showMaximized() if self._was_maximized else self.showNormal()
         else:
             self._was_maximized = self.isMaximized()
-            self._dock_was_visible = self.dock.isVisible()
+            # 재생목록·구간 목록 등 모든 패널을 숨긴다 (탭으로 겹친 패널 포함)
+            self._docks_visible = [d.isVisible() for d in docks]
             self.menuBar().hide()
-            self.dock.hide()
+            for d in docks:
+                d.hide()
             self.area.set_overlay(True)
             self.showFullScreen()
             self._hide_timer.start()
         self.a_full.setChecked(self.isFullScreen())
 
+    FS_EDGE = 90  # 전체화면에서 위·아래 가장자리 몇 픽셀 안에 마우스가 오면 메뉴/컨트롤을 보일지
+
     def _on_mouse_activity(self) -> None:
-        if self.isFullScreen():
+        if not self.isFullScreen():
+            return
+        self.video.unsetCursor()
+        y = self.area.mapFromGlobal(QCursor.pos()).y()
+        h = self.area.height()
+        if y <= self.FS_EDGE:
+            self.area.topbar.show()
+            self.area.topbar.raise_()
+        elif y >= h - self.controls.sizeHint().height() - self.FS_EDGE:
             self.controls.show()
-            self.video.unsetCursor()
-            self._hide_timer.start()
+            self.controls.raise_()
+        self._hide_timer.start()
 
     def _auto_hide_controls(self) -> None:
         if not self.isFullScreen():
             return
-        if self.controls.underMouse():
-            self._hide_timer.start()
+        bars = (self.controls, self.area.topbar)
+        if any(b.isVisible() and b.underMouse() for b in bars) or QApplication.activePopupWidget():
+            self._hide_timer.start()  # 메뉴를 쓰는 중이면 기다림
             return
-        self.controls.hide()
+        for b in bars:
+            b.hide()
         self.video.setCursor(Qt.BlankCursor)
+
+    def main_menu(self) -> QMenu:
+        """메뉴바의 모든 메뉴를 담은 팝업 (오른쪽 클릭, 전체화면 메뉴 버튼)."""
+        menu = QMenu(self)
+        for a in self.menuBar().actions():
+            if a.menu():
+                menu.addMenu(a.menu())
+        if self.isFullScreen():
+            menu.addSeparator()
+            menu.addAction("창 모드로", self.toggle_fullscreen)
+        return menu
 
     def toggle_on_top(self) -> None:
         self.setWindowFlag(Qt.WindowStaysOnTopHint, self.a_ontop.isChecked())

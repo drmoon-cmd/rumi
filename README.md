@@ -7,6 +7,11 @@ Windows, macOS, Linux에서 동작합니다 (Python + Qt(PySide6) + libmpv).
 
 ### 플레이어
 - MKV, MP4, AVI, MOV, WMV, FLV, TS, WebM 등 mpv가 지원하는 거의 모든 형식, 하드웨어 가속 디코딩
+- **재생목록 관리**: 📁 탐색기(드라이브·폴더에서 바로 재생/추가/새 탭, 끌어다 놓기), 찾기,
+  추가(파일·폴더·URL), 삭제(선택·없는 파일·중복·비우기), 정렬(이름·날짜·크기·경로·무작위, Ctrl+↑/↓ 이동),
+  재생목록 파일 저장·불러오기(.m3u8/.m3u/.pls)
+- **전체화면**: 화면만 보이고, 위쪽에 마우스를 대면 제목·메뉴, 아래쪽에 대면 재생 컨트롤이 나타남.
+  영상 위 오른쪽 클릭으로 전체 메뉴
 - **재생목록 탭**: 여러 목록을 탭으로 관리 (＋로 추가, 더블클릭으로 이름 바꾸기, 끌어서 순서 변경, 종료 후에도 유지)
 - 재생목록: 폴더째 열기, 끌어다 놓기, 순서 바꾸기, 이름순(자연) 정렬, 순서대로/전체 반복/한 개 반복/무작위
 - **이어보기**: 10초 이상 본 파일은 마지막 위치부터 다시 재생 (Home 키로 처음부터)
@@ -94,13 +99,13 @@ pytest            # 라이브러리/중복 정리 로직 테스트
 
 | OS | 명령 | 결과 |
 |---|---|---|
-| Windows | `python packaging/build.py` 다음 `iscc packaging\windows\rumi.iss` | `dist/RumiSetup-0.3.0.exe` (시작 메뉴, 파일 연결 선택) |
+| Windows | `python packaging/build.py` 다음 `iscc packaging\windows\rumi.iss` | `dist/RumiSetup-0.3.1.exe` (시작 메뉴, 파일 연결 선택) |
 | macOS | `python packaging/build.py` | `dist/Rumi.app` |
 | Linux | `python packaging/build.py` | `dist/Rumi/Rumi` |
 
 Windows에서는 `libmpv-2.dll`을 `packaging/windows/` 아래 아무 곳에 두거나, `RUMI_LIBMPV` 환경 변수로 경로를 지정하세요.
 
-각 OS에서 직접 빌드하지 않아도 됩니다. GitHub의 **Actions → build → Run workflow**를 실행하면(또는 `v0.3.0` 같은 태그를 푸시하면) 세 OS용 설치 파일이 한 번에 만들어집니다.
+각 OS에서 직접 빌드하지 않아도 됩니다. GitHub의 **Actions → build → Run workflow**를 실행하면(또는 `v0.3.1` 같은 태그를 푸시하면) 세 OS용 설치 파일이 한 번에 만들어집니다.
 
 ## 데이터 위치
 
