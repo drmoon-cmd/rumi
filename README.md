@@ -35,6 +35,11 @@ Windows, macOS, Linux에서 동작합니다 (Python + Qt(PySide6) + libmpv).
 - **자막 모양**: 글꼴, 크기, 글자색, 테두리, 세로 위치, 배경 상자, ASS 자막에도 적용
 - **환경 설정** (Ctrl+,): 모든 단축키 바꾸기, 마우스(클릭/더블클릭/가운데/휠/Ctrl+휠) 동작 지정
 
+### 화면 분할 보기 (CCTV)
+- **화면 → 화면 분할 보기** (Ctrl+G = 4분할): 2·4·9·16분할로 여러 영상을 전체화면에 격자로 동시에 재생
+- 보고 있는 재생목록 탭의 영상이 순서대로 채워지고, 칸에 파일을 끌어다 놓으면 바뀜. 각 영상은 반복 재생, 소리 꺼짐
+- Esc 닫기, Space 모두 일시정지, 오른쪽 클릭으로 분할 바꾸기
+
 ### PIP (화면 속 화면)
 - **화면 → PIP → PIP로 파일 열기**(Ctrl+P): 메인 영상 위에 작은 영상 창을 최대 4개까지 띄웁니다.
   제목 줄을 끌어 옮기고, 오른쪽 아래 모서리로 크기를 바꿉니다. 소리는 기본으로 꺼져 있습니다.
@@ -100,13 +105,13 @@ pytest            # 라이브러리/중복 정리 로직 테스트
 
 | OS | 명령 | 결과 |
 |---|---|---|
-| Windows | `python packaging/build.py` 다음 `iscc packaging\windows\rumi.iss` | `dist/RumiSetup-0.3.2.exe` (시작 메뉴, 파일 연결 선택) |
+| Windows | `python packaging/build.py` 다음 `iscc packaging\windows\rumi.iss` | `dist/RumiSetup-0.3.3.exe` (시작 메뉴, 파일 연결 선택) |
 | macOS | `python packaging/build.py` | `dist/Rumi.app` |
 | Linux | `python packaging/build.py` | `dist/Rumi/Rumi` |
 
 Windows에서는 `libmpv-2.dll`을 `packaging/windows/` 아래 아무 곳에 두거나, `RUMI_LIBMPV` 환경 변수로 경로를 지정하세요.
 
-각 OS에서 직접 빌드하지 않아도 됩니다. GitHub의 **Actions → build → Run workflow**를 실행하면(또는 `v0.3.2` 같은 태그를 푸시하면) 세 OS용 설치 파일이 한 번에 만들어집니다.
+각 OS에서 직접 빌드하지 않아도 됩니다. GitHub의 **Actions → build → Run workflow**를 실행하면(또는 `v0.3.3` 같은 태그를 푸시하면) 세 OS용 설치 파일이 한 번에 만들어집니다.
 
 ## 데이터 위치
 

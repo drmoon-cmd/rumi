@@ -29,6 +29,7 @@ from ..tools import find_ffmpeg
 from ..media_tools import AudioSettings, build_audio_filter
 from .capture import build_contact_sheet
 from .clips_panel import ClipsPanel
+from .grid import LAYOUTS as GRID_LAYOUTS, GridWindow
 from .dialogs import (
     MOUSE_DEFAULTS, SUB_DEFAULTS, AudioDialog, BookmarksDialog, PreferencesDialog, SubtitleStyleDialog,
     VideoAdjustDialog,
@@ -74,6 +75,7 @@ SHORTCUT_HELP = """
 <tr><td><b>Ctrl + [ / ] / Backspace</b></td><td>소리 싱크 -0.1초 / +0.1초 / 초기화</td></tr>
 <tr><td><b>Ctrl + ,</b></td><td>환경 설정 (단축키·마우스)</td></tr>
 <tr><td><b>Ctrl + L</b></td><td>라이브러리 / 중복 정리</td></tr>
+<tr><td><b>Ctrl + G</b></td><td>화면 분할 보기 (CCTV) — Esc 닫기, Space 전체 일시정지</td></tr>
 </table>
 """
 
@@ -334,6 +336,7 @@ class MainWindow(QMainWindow):
         self.a_adelay_plus = A("소리 싱크 +0.1초", lambda: self.change_audio_delay(0.1), "Ctrl+]")
         self.a_adelay_reset = A("소리 싱크 초기화", lambda: self.change_audio_delay(None), "Ctrl+Backspace")
         self.a_sub_style = A("자막 모양 (글꼴·색·위치)…", self.show_sub_style)
+        self.a_grid = A("화면 분할 보기 (4분할)", lambda: self.open_grid("4분할 (2×2)"), "Ctrl+G")
 
         # 단축키 사용자 지정을 위해 각 동작에 고정 이름을 붙이고 기본 단축키를 기억한다
         self._default_shortcuts: dict[str, str] = {}
@@ -422,6 +425,9 @@ class MainWindow(QMainWindow):
             a.setChecked(key == self._theme)
             self.theme_group.addAction(a)
         m.addSeparator()
+        grid = m.addMenu("화면 분할 보기 (CCTV)")
+        for name in GRID_LAYOUTS:
+            grid.addAction(name, lambda n=name: self.open_grid(n))
         pip = m.addMenu("PIP (화면 속 화면)")
         pip.addActions([self.a_pip_open, self.a_pip_current, self.a_pip_auto, self.a_pip_close])
         m.addSeparator()
@@ -543,6 +549,8 @@ class MainWindow(QMainWindow):
         s.setValue("pipAuto", self.a_pip_auto.isChecked())
         if self._library:
             self._library.close()
+        if getattr(self, "_grid", None) is not None:
+            self._grid.close()
         for pip in list(self._pips):
             pip.close_pip()
         self._sync_timer.stop()
@@ -881,6 +889,26 @@ class MainWindow(QMainWindow):
             self.db.clear_position(path)
         elif self._time >= RESUME_MIN_SECONDS:
             self.db.save_position(path, self._time, self._duration or None)
+
+    # ------------------------------------------------------------------ 화면 분할 보기
+    def open_grid(self, layout_name: str) -> None:
+        """보고 있는 재생목록 탭의 영상들을 격자로 나눠 전체화면에 보여 준다."""
+        paths = [p for p in self.playlist.paths() if "://" not in p and os.path.exists(p)]
+        if not paths:
+            exts = " ".join(f"*{e}" for e in sorted(VIDEO_EXTENSIONS))
+            paths, _ = QFileDialog.getOpenFileNames(self, "분할 화면에 띄울 동영상 (여러 개 선택)",
+                                                    self.settings.value("lastDir", ""), f"동영상 ({exts})")
+            if not paths:
+                return
+        if getattr(self, "_grid", None) is not None:
+            self._grid.close()
+        if self._current:
+            self.player.pause = True
+        self._grid = GridWindow(paths, layout_name, self._hwdec, self.a_compat.isChecked())
+        self._grid.destroyed.connect(lambda: setattr(self, "_grid", None))
+        self._grid.resize(self.size())
+        self._grid.show()
+        self._grid.toggle_fullscreen()
 
     # ------------------------------------------------------------------ 마우스
     def _mouse_action(self, key: str) -> None:
@@ -1230,6 +1258,8 @@ class MainWindow(QMainWindow):
             self._pips.remove(pip)
 
     def close_all_pips(self) -> None:
+        if getattr(self, "_grid", None) is not None:
+            self._grid.close()
         for pip in list(self._pips):
             pip.close_pip()
 
