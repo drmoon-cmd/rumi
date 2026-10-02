@@ -10,7 +10,7 @@ import time
 from pathlib import Path
 
 from PySide6.QtCore import QPoint, QSettings, QStandardPaths, Qt, QTimer, qVersion
-from PySide6.QtGui import QAction, QActionGroup, QCursor, QKeySequence
+from PySide6.QtGui import QAction, QActionGroup, QKeySequence
 from PySide6.QtWidgets import (
     QApplication, QDockWidget, QFileDialog, QHBoxLayout, QInputDialog, QLabel, QMainWindow, QMenu,
     QMessageBox, QToolButton, QWidget,
@@ -34,6 +34,7 @@ from .dialogs import (
     MOUSE_DEFAULTS, SUB_DEFAULTS, AudioDialog, BookmarksDialog, PreferencesDialog, SubtitleStyleDialog,
     VideoAdjustDialog,
 )
+from .hover_reveal import HoverReveal, bottom_zone, top_zone
 from .seek_preview import SeekPreview
 from .workers import run_with_progress
 from .pip import MAX_PIPS, PipView
@@ -45,7 +46,6 @@ SUBTITLE_EXTENSIONS = {".srt", ".smi", ".sami", ".ass", ".ssa", ".vtt", ".sub", 
 MAX_RECENT = 10
 RESUME_MIN_SECONDS = 10      # 이 시간 이상 본 파일만 이어보기
 RESUME_END_MARGIN = 0.95     # 95% 이상 봤으면 다 본 것으로 간주
-CONTROLS_HIDE_MS = 2500
 
 SHORTCUT_HELP = """
 <table cellpadding=3>
@@ -217,8 +217,9 @@ class MainWindow(QMainWindow):
         self.tabifyDockWidget(self.dock, self.clips_dock)
         self.dock.raise_()
 
-        self._hide_timer = QTimer(self, singleShot=True, interval=CONTROLS_HIDE_MS)
-        self._hide_timer.timeout.connect(self._auto_hide_controls)
+        self._reveal = HoverReveal(
+            self.area, [(self.area.topbar, top_zone), (self.controls, bottom_zone)],
+            cursor_widgets=[self.video, self.area])
         self._save_timer = QTimer(self, interval=5000)
         self._save_timer.timeout.connect(self._save_position)
         self._save_timer.start()
@@ -461,7 +462,6 @@ class MainWindow(QMainWindow):
         v.middle_clicked.connect(lambda: self._mouse_action("middle_click"))
         v.wheel_scrolled.connect(self._on_wheel)
         v.dragged.connect(self._on_drag)
-        v.mouse_moved.connect(self._on_mouse_activity)
 
         c.play_pause.connect(self.toggle_pause)
         c.stop.connect(self.stop)
@@ -531,7 +531,7 @@ class MainWindow(QMainWindow):
             return super().closeEvent(e)
         self._save_position()
         self._save_timer.stop()
-        self._hide_timer.stop()
+        self._reveal.stop()
         if self.isFullScreen():
             self.toggle_fullscreen()
         s = self.settings
@@ -1340,8 +1340,7 @@ class MainWindow(QMainWindow):
             for d, visible in zip(docks, self._docks_visible):
                 d.setVisible(visible)
             self.area.set_overlay(False)
-            self._hide_timer.stop()
-            self.video.unsetCursor()
+            self._reveal.stop()
             self.showMaximized() if self._was_maximized else self.showNormal()
         else:
             self._was_maximized = self.isMaximized()
@@ -1353,35 +1352,9 @@ class MainWindow(QMainWindow):
             self.area.set_overlay(True)
             self.showFullScreen()
             _windows_fullscreen_border(self)
-            self._hide_timer.start()
+            self._reveal.start()
+            self._reveal.show_all()  # 들어갈 때 잠깐 보여 주고 2.5초 뒤 숨김
         self.a_full.setChecked(self.isFullScreen())
-
-    FS_EDGE = 90  # 전체화면에서 위·아래 가장자리 몇 픽셀 안에 마우스가 오면 메뉴/컨트롤을 보일지
-
-    def _on_mouse_activity(self) -> None:
-        if not self.isFullScreen():
-            return
-        self.video.unsetCursor()
-        y = self.area.mapFromGlobal(QCursor.pos()).y()
-        h = self.area.height()
-        if y <= self.FS_EDGE:
-            self.area.topbar.show()
-            self.area.topbar.raise_()
-        elif y >= h - self.controls.sizeHint().height() - self.FS_EDGE:
-            self.controls.show()
-            self.controls.raise_()
-        self._hide_timer.start()
-
-    def _auto_hide_controls(self) -> None:
-        if not self.isFullScreen():
-            return
-        bars = (self.controls, self.area.topbar)
-        if any(b.isVisible() and b.underMouse() for b in bars) or QApplication.activePopupWidget():
-            self._hide_timer.start()  # 메뉴를 쓰는 중이면 기다림
-            return
-        for b in bars:
-            b.hide()
-        self.video.setCursor(Qt.BlankCursor)
 
     def main_menu(self) -> QMenu:
         """메뉴바의 모든 메뉴를 담은 팝업 (오른쪽 클릭, 전체화면 메뉴 버튼)."""

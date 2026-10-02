@@ -3,7 +3,7 @@
 ; 2) Inno Setup 의 iscc packaging\windows\rumi.iss 실행
 
 #define AppName "Rumi"
-#define AppVersion "0.3.3"
+#define AppVersion "0.3.4"
 
 [Setup]
 AppId={{6C1E7B0E-6D3B-4E0B-9C61-7A2B7F5B1C11}

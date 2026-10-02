@@ -4,11 +4,19 @@ from __future__ import annotations
 
 import os
 
-from PySide6.QtCore import Qt
+from PySide6.QtCore import Qt, QTimer
 from PySide6.QtGui import QAction, QKeySequence
-from PySide6.QtWidgets import QGridLayout, QLabel, QMenu, QStackedLayout, QWidget
+from PySide6.QtWidgets import (
+    QComboBox, QGridLayout, QHBoxLayout, QLabel, QMenu, QStackedLayout, QToolButton, QWidget,
+)
 
+from .controls import SeekSlider
+from .hover_reveal import HoverReveal, bottom_zone
+from .icons import make_icon
 from .mpv_widget import MpvWidget
+from .util import fmt_time
+
+SPEEDS = (0.25, 0.5, 0.75, 1.0, 1.25, 1.5, 2.0, 4.0)
 
 LAYOUTS = {  # 이름: (열, 행)
     "2분할 (1×2)": (2, 1),
@@ -70,6 +78,55 @@ class GridCell(QWidget):
         self.video.shutdown()
 
 
+class GridBar(QWidget):
+    """분할 화면 아래 조작 줄: 모두 재생/일시정지, 탐색(모든 화면 같은 위치로), 배속, 창 모드, 닫기."""
+
+    def __init__(self, grid: "GridWindow"):
+        super().__init__(grid)
+        self.setObjectName("gridBar")
+        self.setAttribute(Qt.WA_StyledBackground, True)
+        self.setStyleSheet("#gridBar { background: rgba(20, 21, 24, 230); border-top: 1px solid #3a3d43; }"
+                           "#gridBar QLabel, #gridBar QToolButton { color: #e6e7e9; }")
+        self.play = QToolButton()
+        self.play.setAutoRaise(True)
+        self.play.setFocusPolicy(Qt.NoFocus)
+        self.play.clicked.connect(grid.toggle_pause)
+        self.seek = SeekSlider()
+        self.seek.setFocusPolicy(Qt.NoFocus)
+        self.seek.seek_requested.connect(grid.seek_all)
+        self.time = QLabel("--:-- / --:--")
+        self.speed = QComboBox()
+        for sp in SPEEDS:
+            self.speed.addItem(f"{sp:g}x", sp)
+        self.speed.setCurrentIndex(SPEEDS.index(1.0))
+        self.speed.setFocusPolicy(Qt.NoFocus)
+        self.speed.activated.connect(lambda i: grid.set_speed(SPEEDS[i]))
+        self.full = QToolButton()
+        self.full.setIcon(make_icon("fullscreen", "#e6e7e9"))
+        self.full.setToolTip("전체화면 / 창 모드 (F)")
+        self.full.setAutoRaise(True)
+        self.full.setFocusPolicy(Qt.NoFocus)
+        self.full.clicked.connect(grid.toggle_fullscreen)
+        close = QToolButton()
+        close.setIcon(make_icon("close", "#e6e7e9"))
+        close.setToolTip("분할 화면 닫기 (Esc)")
+        close.setAutoRaise(True)
+        close.setFocusPolicy(Qt.NoFocus)
+        close.clicked.connect(grid.close)
+        row = QHBoxLayout(self)
+        row.setContentsMargins(10, 6, 10, 6)
+        row.addWidget(self.play)
+        row.addWidget(self.seek, 1)
+        row.addWidget(self.time)
+        row.addWidget(self.speed)
+        row.addWidget(self.full)
+        row.addWidget(close)
+        self.set_paused(False)
+
+    def set_paused(self, paused: bool) -> None:
+        self.play.setIcon(make_icon("play" if paused else "pause", "#e6e7e9"))
+
+
 class GridWindow(QWidget):
     def __init__(self, paths: list[str], layout_name: str, hwdec: str = "no", compat: bool = False):
         super().__init__(None, Qt.Window)
@@ -85,6 +142,14 @@ class GridWindow(QWidget):
         self.grid.setContentsMargins(0, 0, 0, 0)
         self.grid.setSpacing(2)
         self.set_layout(layout_name)
+
+        self.bar = GridBar(self)
+        self.reveal = HoverReveal(self, [(self.bar, bottom_zone)],
+                                  cursor_widgets=[c.video for c in self.cells])
+        self.reveal.start()
+        self._tick = QTimer(self, interval=300)
+        self._tick.timeout.connect(self._update_bar)
+        self._tick.start()
 
         for key, slot in (("Esc", self.close), ("Space", self.toggle_pause),
                           ("F", self.toggle_fullscreen), ("Return", self.toggle_fullscreen)):
@@ -119,12 +184,54 @@ class GridWindow(QWidget):
         for c in range(4):
             self.grid.setColumnStretch(c, 1 if c < cols else 0)
         self.layout_name = name
+        if hasattr(self, "reveal"):
+            self.reveal.cursor_widgets = [c.video for c in self.cells]
+            self.bar.raise_()
+
+    def resizeEvent(self, e):
+        super().resizeEvent(e)
+        if hasattr(self, "bar"):
+            h = self.bar.sizeHint().height()
+            self.bar.setGeometry(0, self.height() - h, self.width(), h)
+            self.bar.raise_()
+
+    def _playing(self) -> list[GridCell]:
+        return [c for c in self.cells if c.path]
+
+    def _update_bar(self) -> None:
+        cells = self._playing()
+        if not cells:
+            return
+        p = cells[0].video.player
+        try:
+            t, d = float(p.time_pos or 0), float(p.duration or 0)
+        except (TypeError, ValueError):
+            return
+        if d > 0:
+            self.bar.seek.set_ratio(t / d)
+        self.bar.time.setText(f"{fmt_time(t)} / {fmt_time(d or None)}")
+
+    def seek_all(self, ratio: float) -> None:
+        """모든 화면을 같은 위치(각 영상 길이의 같은 비율)로 옮긴다."""
+        for c in self._playing():
+            try:
+                d = float(c.video.player.duration or 0)
+                if d > 0:
+                    c.video.player.seek(ratio * d, "absolute", "exact")
+            except (SystemError, TypeError, ValueError):
+                pass
+
+    def set_speed(self, sp: float) -> None:
+        for c in self._playing():
+            c.video.player.speed = sp
 
     def toggle_pause(self) -> None:
         self.paused = not self.paused
         for c in self.cells:
             if c.path:
                 c.video.player.pause = self.paused
+        if hasattr(self, "bar"):
+            self.bar.set_paused(self.paused)
 
     def toggle_fullscreen(self) -> None:
         if self.isFullScreen():
@@ -148,6 +255,8 @@ class GridWindow(QWidget):
         menu.exec(pos)
 
     def closeEvent(self, e):
+        self.reveal.stop()
+        self._tick.stop()
         for c in self.cells:
             c.shutdown()
         self.cells = []

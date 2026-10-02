@@ -105,13 +105,13 @@ pytest            # 라이브러리/중복 정리 로직 테스트
 
 | OS | 명령 | 결과 |
 |---|---|---|
-| Windows | `python packaging/build.py` 다음 `iscc packaging\windows\rumi.iss` | `dist/RumiSetup-0.3.3.exe` (시작 메뉴, 파일 연결 선택) |
+| Windows | `python packaging/build.py` 다음 `iscc packaging\windows\rumi.iss` | `dist/RumiSetup-0.3.4.exe` (시작 메뉴, 파일 연결 선택) |
 | macOS | `python packaging/build.py` | `dist/Rumi.app` |
 | Linux | `python packaging/build.py` | `dist/Rumi/Rumi` |
 
 Windows에서는 `libmpv-2.dll`을 `packaging/windows/` 아래 아무 곳에 두거나, `RUMI_LIBMPV` 환경 변수로 경로를 지정하세요.
 
-각 OS에서 직접 빌드하지 않아도 됩니다. GitHub의 **Actions → build → Run workflow**를 실행하면(또는 `v0.3.3` 같은 태그를 푸시하면) 세 OS용 설치 파일이 한 번에 만들어집니다.
+각 OS에서 직접 빌드하지 않아도 됩니다. GitHub의 **Actions → build → Run workflow**를 실행하면(또는 `v0.3.4` 같은 태그를 푸시하면) 세 OS용 설치 파일이 한 번에 만들어집니다.
 
 ## 데이터 위치
 

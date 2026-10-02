@@ -4,7 +4,7 @@ build-backend = "setuptools.build_meta"
 
 [project]
 name = "rumi"
-version = "0.3.3"
+version = "0.3.4"
 description = "mpv 기반 설치형 동영상 플레이어 + 동영상 라이브러리/중복 정리"
 readme = "README.md"
 requires-python = ">=3.10"
