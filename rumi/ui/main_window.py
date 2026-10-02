@@ -5,7 +5,6 @@ from __future__ import annotations
 import json
 import os
 import platform
-import sys
 import time
 from pathlib import Path
 
@@ -29,13 +28,15 @@ from ..tools import find_ffmpeg
 from ..media_tools import AudioSettings, build_audio_filter
 from .capture import build_contact_sheet
 from .clips_panel import ClipsPanel
-from .grid import LAYOUTS as GRID_LAYOUTS, GridWindow
+from .grid import LAYOUTS as GRID_LAYOUTS, GridWindow, video_filter as grid_video_filter
 from .dialogs import (
     MOUSE_DEFAULTS, SUB_DEFAULTS, AudioDialog, BookmarksDialog, PreferencesDialog, SubtitleStyleDialog,
     VideoAdjustDialog,
 )
+from .fullscreen import enter_fullscreen, is_fullscreen, leave_fullscreen
 from .hover_reveal import HoverReveal, bottom_zone, top_zone
 from .seek_preview import SeekPreview
+from .watchdog import HangWatchdog
 from .workers import run_with_progress
 from .pip import MAX_PIPS, PipView
 from .playlist import PlaylistPanel
@@ -75,32 +76,9 @@ SHORTCUT_HELP = """
 <tr><td><b>Ctrl + [ / ] / Backspace</b></td><td>소리 싱크 -0.1초 / +0.1초 / 초기화</td></tr>
 <tr><td><b>Ctrl + ,</b></td><td>환경 설정 (단축키·마우스)</td></tr>
 <tr><td><b>Ctrl + L</b></td><td>라이브러리 / 중복 정리</td></tr>
-<tr><td><b>Ctrl + G</b></td><td>화면 분할 보기 (CCTV) — Esc 닫기, Space 전체 일시정지</td></tr>
+<tr><td><b>Ctrl + G</b></td><td>화면 분할 보기 (CCTV) — 파일 골라 열기, Esc 닫기, Space 전체 일시정지</td></tr>
 </table>
 """
-
-
-def _windows_fullscreen_border(widget: QWidget) -> None:
-    """Windows: OpenGL 창이 전체화면이 되면 '독점 전체화면'으로 취급되어 오른쪽 클릭 메뉴,
-    툴팁 같은 팝업이 뜨지 않는다 (Qt 문서의 알려진 문제). Qt 가 권하는 대로 창에 1픽셀
-    테두리(WS_BORDER)를 줘서 일반 창으로 남게 한다."""
-    if sys.platform != "win32":
-        return
-    try:
-        import ctypes
-        user32 = ctypes.windll.user32
-        get_style = user32.GetWindowLongPtrW
-        set_style = user32.SetWindowLongPtrW
-        get_style.restype = set_style.restype = ctypes.c_ssize_t
-        get_style.argtypes = [ctypes.c_void_p, ctypes.c_int]
-        set_style.argtypes = [ctypes.c_void_p, ctypes.c_int, ctypes.c_ssize_t]
-        GWL_STYLE, WS_BORDER = -16, 0x00800000
-        SWP_FLAGS = 0x0001 | 0x0002 | 0x0004 | 0x0020  # NOSIZE | NOMOVE | NOZORDER | FRAMECHANGED
-        hwnd = ctypes.c_void_p(int(widget.winId()))
-        set_style(hwnd, GWL_STYLE, get_style(hwnd, GWL_STYLE) | WS_BORDER)
-        user32.SetWindowPos(hwnd, None, 0, 0, 0, 0, SWP_FLAGS)
-    except Exception:
-        pass  # 실패해도 전체화면 자체는 동작한다
 
 
 def data_dir() -> Path:
@@ -177,11 +155,11 @@ class MainWindow(QMainWindow):
         self.settings = QSettings()
         self._theme = apply_theme(QApplication.instance(), self.settings.value("theme", DEFAULT_THEME))
         self.db = LibraryDB(data_dir() / "library.sqlite3")
+        self._watchdog = HangWatchdog(data_dir() / "hang.log", self)
         self._library: LibraryWindow | None = None
         self._current: str | None = None
         self._time = 0.0
         self._duration = 0.0
-        self._was_maximized = False
         self._docks_visible = [True, True]
         self._closed = False
         self._tracks: list = []
@@ -285,7 +263,7 @@ class MainWindow(QMainWindow):
         self.a_sub_smaller = A("자막 작게", lambda: self.change_sub_scale(-0.1), "Alt+Down")
 
         self.a_full = A("전체화면", self.toggle_fullscreen, ["Return", "F", "Enter"], checkable=True)
-        self.a_exit_full = A("전체화면 해제", lambda: self.isFullScreen() and self.toggle_fullscreen(), "Esc")
+        self.a_exit_full = A("전체화면 해제", lambda: is_fullscreen(self) and self.toggle_fullscreen(), "Esc")
         self.a_ontop = A("항상 위", self.toggle_on_top, "Ctrl+T", checkable=True)
         self.a_screenshot = A("스크린샷", self.screenshot, "S")
         self.a_playlist = A("재생목록", lambda: self._toggle_dock(self.dock), "F9")
@@ -337,7 +315,7 @@ class MainWindow(QMainWindow):
         self.a_adelay_plus = A("소리 싱크 +0.1초", lambda: self.change_audio_delay(0.1), "Ctrl+]")
         self.a_adelay_reset = A("소리 싱크 초기화", lambda: self.change_audio_delay(None), "Ctrl+Backspace")
         self.a_sub_style = A("자막 모양 (글꼴·색·위치)…", self.show_sub_style)
-        self.a_grid = A("화면 분할 보기 (4분할)", lambda: self.open_grid("4분할 (2×2)"), "Ctrl+G")
+        self.a_grid = A("화면 분할 보기 (파일 골라 열기)…", lambda: self.open_grid(), "Ctrl+G")
 
         # 단축키 사용자 지정을 위해 각 동작에 고정 이름을 붙이고 기본 단축키를 기억한다
         self._default_shortcuts: dict[str, str] = {}
@@ -427,8 +405,11 @@ class MainWindow(QMainWindow):
             self.theme_group.addAction(a)
         m.addSeparator()
         grid = m.addMenu("화면 분할 보기 (CCTV)")
+        grid.addAction(self.a_grid)
+        grid.addAction("재생목록 영상으로 열기", lambda: self.open_grid(from_playlist=True))
+        grid.addSeparator()
         for name in GRID_LAYOUTS:
-            grid.addAction(name, lambda n=name: self.open_grid(n))
+            grid.addAction(name + " 로 파일 열기…", lambda n=name: self.open_grid(n))
         pip = m.addMenu("PIP (화면 속 화면)")
         pip.addActions([self.a_pip_open, self.a_pip_current, self.a_pip_auto, self.a_pip_close])
         m.addSeparator()
@@ -532,7 +513,8 @@ class MainWindow(QMainWindow):
         self._save_position()
         self._save_timer.stop()
         self._reveal.stop()
-        if self.isFullScreen():
+        self._watchdog.stop()
+        if is_fullscreen(self):
             self.toggle_fullscreen()
         s = self.settings
         s.setValue("geometry", self.saveGeometry())
@@ -767,6 +749,9 @@ class MainWindow(QMainWindow):
         info += "\n\n[메인 영상]\n" + "\n".join(self.video.diagnostics())
         for i, pip in enumerate(self._pips, 1):
             info += f"\n\n[PIP {i}] 동기화={'켜짐' if pip.sync.isChecked() else '꺼짐'}\n" + "\n".join(pip.video.diagnostics())
+        hang = self._watchdog.tail()
+        if 'File "' in hang:
+            info += "\n\n[화면 멈춤 기록]\n" + hang
         QApplication.clipboard().setText(info)
         box = QMessageBox(QMessageBox.Information, "진단 정보",
                           "진단 정보를 복사했습니다. 그대로 붙여 넣어 보내 주세요.\n\n"
@@ -891,24 +876,35 @@ class MainWindow(QMainWindow):
             self.db.save_position(path, self._time, self._duration or None)
 
     # ------------------------------------------------------------------ 화면 분할 보기
-    def open_grid(self, layout_name: str) -> None:
-        """보고 있는 재생목록 탭의 영상들을 격자로 나눠 전체화면에 보여 준다."""
-        paths = [p for p in self.playlist.paths() if "://" not in p and os.path.exists(p)]
-        if not paths:
-            exts = " ".join(f"*{e}" for e in sorted(VIDEO_EXTENSIONS))
-            paths, _ = QFileDialog.getOpenFileNames(self, "분할 화면에 띄울 동영상 (여러 개 선택)",
-                                                    self.settings.value("lastDir", ""), f"동영상 ({exts})")
+    def open_grid(self, layout_name: str = "4분할 (2×2)", from_playlist: bool = False) -> None:
+        """여러 영상을 격자로 나눠 전체화면에 보여 준다. 기본은 파일을 직접 고른다."""
+        if from_playlist:
+            paths = [p for p in self.playlist.paths() if "://" not in p and os.path.exists(p)]
+            if not paths:
+                self.osd("재생목록에 동영상이 없습니다")
+                return
+        else:
+            start = self.settings.value("gridDir", "") or self.settings.value("lastDir", "")
+            paths, _ = QFileDialog.getOpenFileNames(self, "분할 화면에 띄울 동영상 (여러 개 선택)", start,
+                                                    grid_video_filter())
             if not paths:
                 return
+            self.settings.setValue("gridDir", os.path.dirname(paths[0]))
         if getattr(self, "_grid", None) is not None:
             self._grid.close()
         if self._current:
             self.player.pause = True
         self._grid = GridWindow(paths, layout_name, self._hwdec, self.a_compat.isChecked())
-        self._grid.destroyed.connect(lambda: setattr(self, "_grid", None))
+        self._grid.destroyed.connect(self._on_grid_closed)
         self._grid.resize(self.size())
         self._grid.show()
         self._grid.toggle_fullscreen()
+
+    def _on_grid_closed(self) -> None:
+        self._grid = None
+        # 분할 화면이 닫히면 메인 창을 다시 앞으로 (뒤에 깔린 채 대화상자가 가려지지 않게)
+        self.raise_()
+        self.activateWindow()
 
     # ------------------------------------------------------------------ 마우스
     def _mouse_action(self, key: str) -> None:
@@ -1178,7 +1174,7 @@ class MainWindow(QMainWindow):
             return
         self._mark_in = None
         self.osd(f"구간 추가: {fmt_time(clip.start)} ~ {fmt_time(clip.end)}")
-        if not self.isFullScreen():
+        if not is_fullscreen(self):
             self.clips_dock.show()
             self.clips_dock.raise_()
 
@@ -1335,26 +1331,24 @@ class MainWindow(QMainWindow):
     # ------------------------------------------------------------------ 화면
     def toggle_fullscreen(self) -> None:
         docks = (self.dock, self.clips_dock)
-        if self.isFullScreen():
+        if is_fullscreen(self):
             self.menuBar().show()
             for d, visible in zip(docks, self._docks_visible):
                 d.setVisible(visible)
             self.area.set_overlay(False)
             self._reveal.stop()
-            self.showMaximized() if self._was_maximized else self.showNormal()
+            leave_fullscreen(self)
         else:
-            self._was_maximized = self.isMaximized()
             # 재생목록·구간 목록 등 모든 패널을 숨긴다 (탭으로 겹친 패널 포함)
             self._docks_visible = [d.isVisible() for d in docks]
             self.menuBar().hide()
             for d in docks:
                 d.hide()
             self.area.set_overlay(True)
-            self.showFullScreen()
-            _windows_fullscreen_border(self)
+            enter_fullscreen(self)
             self._reveal.start()
             self._reveal.show_all()  # 들어갈 때 잠깐 보여 주고 2.5초 뒤 숨김
-        self.a_full.setChecked(self.isFullScreen())
+        self.a_full.setChecked(is_fullscreen(self))
 
     def main_menu(self) -> QMenu:
         """메뉴바의 모든 메뉴를 담은 팝업 (오른쪽 클릭, 전체화면 메뉴 버튼)."""
@@ -1362,7 +1356,7 @@ class MainWindow(QMainWindow):
         for a in self.menuBar().actions():
             if a.menu():
                 menu.addMenu(a.menu())
-        if self.isFullScreen():
+        if is_fullscreen(self):
             menu.addSeparator()
             menu.addAction("창 모드로", self.toggle_fullscreen)
         return menu

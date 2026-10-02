@@ -13,18 +13,23 @@ from PySide6.QtCore import QObject, QPoint, Qt, QTimer
 from PySide6.QtGui import QCursor
 from PySide6.QtWidgets import QApplication, QWidget
 
+Zone = Callable[[QPoint, QWidget], bool]
+
 POLL_MS = 150
 HIDE_AFTER_MS = 2500
 
 
 class HoverReveal(QObject):
-    """area 위에서 커서가 zone(y, h) 안에 오면 해당 bar 를 보인다."""
+    """area 위에서 커서가 zone(위치, area) 안에 오면 해당 bar 를 보인다.
 
-    def __init__(self, area: QWidget, bars: list[tuple[QWidget, Callable[[int, int], bool]]],
-                 cursor_widgets: list[QWidget] | None = None):
+    follow=True 인 bar 는 커서가 zone 을 벗어나면 바로 숨긴다 (분할 화면의 칸별 조작 줄)."""
+
+    def __init__(self, area: QWidget, bars: list[tuple[QWidget, Zone]],
+                 cursor_widgets: list[QWidget] | None = None, follow: list[tuple[QWidget, Zone]] | None = None):
         super().__init__(area)
         self.area = area
         self.bars = bars
+        self.follow = follow or []
         self.cursor_widgets = cursor_widgets or []  # 숨김 상태일 때 커서를 감출 위젯들
         self._last = QPoint(-1, -1)
         self._idle_ms = 0
@@ -58,27 +63,34 @@ class HoverReveal(QObject):
             for w in self.cursor_widgets:
                 w.unsetCursor()
             for bar, zone in self.bars:
-                if zone(local.y(), self.area.height()):
+                if zone(local, self.area):
                     bar.show()
                     bar.raise_()
+            for bar, zone in self.follow:
+                if zone(local, self.area):
+                    bar.show()
+                    bar.raise_()
+                elif not bar.underMouse():
+                    bar.hide()
             return
         self._idle_ms += POLL_MS
         if self._idle_ms < HIDE_AFTER_MS:
             return
         # 조작 줄 위에 커서가 있거나 메뉴를 쓰는 중이면 숨기지 않는다
-        if QApplication.activePopupWidget() or any(b.isVisible() and b.underMouse() for b, _ in self.bars):
+        bars = self.bars + self.follow
+        if QApplication.activePopupWidget() or any(b.isVisible() and b.underMouse() for b, _ in bars):
             self._idle_ms = 0
             return
-        if any(b.isVisible() for b, _ in self.bars):
-            for b, _ in self.bars:
+        if any(b.isVisible() for b, _ in bars):
+            for b, _ in bars:
                 b.hide()
             for w in self.cursor_widgets:
                 w.setCursor(Qt.BlankCursor)
 
 
-def top_zone(y: int, h: int) -> bool:
-    return y <= max(90, h * 0.12)
+def top_zone(pos: QPoint, area: QWidget) -> bool:
+    return pos.y() <= max(90, area.height() * 0.12)
 
 
-def bottom_zone(y: int, h: int) -> bool:
-    return y >= h - max(140, h * 0.22)
+def bottom_zone(pos: QPoint, area: QWidget) -> bool:
+    return pos.y() >= area.height() - max(140, area.height() * 0.22)

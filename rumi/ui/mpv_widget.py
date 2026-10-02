@@ -21,6 +21,7 @@ import mpv
 # 기본 고품질 스케일러 셰이더가 너무 무거워 영상이 검게 나오므로 가벼운 설정으로 바꾼다.
 SOFTWARE_RENDERERS = ("llvmpipe", "softpipe", "swrast", "gdi generic", "microsoft basic render")
 GL_RENDERER = 0x1F01
+GL_COLOR_BUFFER_BIT = 0x4000
 
 # 하드웨어(GPU) 디코딩. 일부 그래픽 드라이버에서 탐색/이어보기 뒤 영상에 줄 노이즈가 생기므로
 # mpv 와 같이 기본은 끄고(소프트웨어 디코딩), 필요한 사람만 켜도록 한다.
@@ -48,6 +49,7 @@ def _get_proc_address(_ctx, name: bytes) -> int:
 class MpvWidget(QOpenGLWidget):
     # mpv 스레드 → GUI 스레드
     _frame_ready = Signal()
+    idle_changed = Signal(bool)              # 열린 파일이 없음 (정지 상태)
     time_changed = Signal(float)
     duration_changed = Signal(float)
     pause_changed = Signal(bool)
@@ -110,6 +112,8 @@ class MpvWidget(QOpenGLWidget):
         self.setFocusPolicy(Qt.StrongFocus)
         self.setMinimumSize(320, 180)
         self._observing = False
+        self.idle = True
+        self.idle_changed.connect(self._on_idle)
 
     def _on_log(self, level: str, component: str, message: str) -> None:
         # mpv 스레드에서 호출됨. 진단용으로 최근 경고/오류만 보관
@@ -152,6 +156,7 @@ class MpvWidget(QOpenGLWidget):
             "eof-reached": lambda v: v and self.eof_reached.emit(),
             "track-list": lambda v: self.tracks_changed.emit(list(v or [])),
             "sub-text": lambda v: self.sub_text_changed.emit(str(v or "")),
+            "idle-active": lambda v: self.idle_changed.emit(bool(v)),
         }
         for prop, fn in bind.items():
             p.observe_property(prop, lambda _name, value, fn=fn: fn(value))
@@ -209,8 +214,15 @@ class MpvWidget(QOpenGLWidget):
         self._free_render_ctx()
         self.doneCurrent()
 
+    def _on_idle(self, idle: bool) -> None:
+        self.idle = idle
+        self.update()  # 정지하면 마지막 장면을 지우고 검은 화면으로
+
     def paintGL(self) -> None:
-        if self._render_ctx is None:
+        if self._render_ctx is None or self.idle:
+            f = self.context().functions()
+            f.glClearColor(0.0, 0.0, 0.0, 1.0)
+            f.glClear(GL_COLOR_BUFFER_BIT)
             return
         ratio = self.devicePixelRatioF()
         self._render_ctx.render(
