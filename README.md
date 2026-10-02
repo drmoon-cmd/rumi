@@ -38,6 +38,7 @@ Windows, macOS, Linux에서 동작합니다 (Python + Qt(PySide6) + libmpv).
 ### PIP (화면 속 화면)
 - **화면 → PIP → PIP로 파일 열기**(Ctrl+P): 메인 영상 위에 작은 영상 창을 최대 4개까지 띄웁니다.
   제목 줄을 끌어 옮기고, 오른쪽 아래 모서리로 크기를 바꿉니다. 소리는 기본으로 꺼져 있습니다.
+- PIP 아래 조작 줄: 재생/일시정지, 탐색 바, 시간, 재생 속도 (동기화 중이면 메인 영상도 함께 움직임)
 - PIP 화면에서 **오른쪽 클릭**: 재생/일시정지, 동기화, 소리, 메인 화면과 바꾸기, 다른 파일 열기, 크기, 위치, 닫기
 - PIP마다 **동기화**를 켜면 메인 영상과 같은 시각으로 재생·정지·탐색·배속이 맞춰집니다. 끄면 따로 재생합니다.
 - **블랙박스 뒤 카메라 자동 PIP**를 켜면, 앞 카메라 영상을 열 때 짝이 되는 뒤 카메라 파일을
@@ -99,13 +100,13 @@ pytest            # 라이브러리/중복 정리 로직 테스트
 
 | OS | 명령 | 결과 |
 |---|---|---|
-| Windows | `python packaging/build.py` 다음 `iscc packaging\windows\rumi.iss` | `dist/RumiSetup-0.3.1.exe` (시작 메뉴, 파일 연결 선택) |
+| Windows | `python packaging/build.py` 다음 `iscc packaging\windows\rumi.iss` | `dist/RumiSetup-0.3.2.exe` (시작 메뉴, 파일 연결 선택) |
 | macOS | `python packaging/build.py` | `dist/Rumi.app` |
 | Linux | `python packaging/build.py` | `dist/Rumi/Rumi` |
 
 Windows에서는 `libmpv-2.dll`을 `packaging/windows/` 아래 아무 곳에 두거나, `RUMI_LIBMPV` 환경 변수로 경로를 지정하세요.
 
-각 OS에서 직접 빌드하지 않아도 됩니다. GitHub의 **Actions → build → Run workflow**를 실행하면(또는 `v0.3.1` 같은 태그를 푸시하면) 세 OS용 설치 파일이 한 번에 만들어집니다.
+각 OS에서 직접 빌드하지 않아도 됩니다. GitHub의 **Actions → build → Run workflow**를 실행하면(또는 `v0.3.2` 같은 태그를 푸시하면) 세 OS용 설치 파일이 한 번에 만들어집니다.
 
 ## 데이터 위치
 

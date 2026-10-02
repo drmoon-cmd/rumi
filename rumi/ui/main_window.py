@@ -5,6 +5,7 @@ from __future__ import annotations
 import json
 import os
 import platform
+import sys
 import time
 from pathlib import Path
 
@@ -75,6 +76,29 @@ SHORTCUT_HELP = """
 <tr><td><b>Ctrl + L</b></td><td>라이브러리 / 중복 정리</td></tr>
 </table>
 """
+
+
+def _windows_fullscreen_border(widget: QWidget) -> None:
+    """Windows: OpenGL 창이 전체화면이 되면 '독점 전체화면'으로 취급되어 오른쪽 클릭 메뉴,
+    툴팁 같은 팝업이 뜨지 않는다 (Qt 문서의 알려진 문제). Qt 가 권하는 대로 창에 1픽셀
+    테두리(WS_BORDER)를 줘서 일반 창으로 남게 한다."""
+    if sys.platform != "win32":
+        return
+    try:
+        import ctypes
+        user32 = ctypes.windll.user32
+        get_style = user32.GetWindowLongPtrW
+        set_style = user32.SetWindowLongPtrW
+        get_style.restype = set_style.restype = ctypes.c_ssize_t
+        get_style.argtypes = [ctypes.c_void_p, ctypes.c_int]
+        set_style.argtypes = [ctypes.c_void_p, ctypes.c_int, ctypes.c_ssize_t]
+        GWL_STYLE, WS_BORDER = -16, 0x00800000
+        SWP_FLAGS = 0x0001 | 0x0002 | 0x0004 | 0x0020  # NOSIZE | NOMOVE | NOZORDER | FRAMECHANGED
+        hwnd = ctypes.c_void_p(int(widget.winId()))
+        set_style(hwnd, GWL_STYLE, get_style(hwnd, GWL_STYLE) | WS_BORDER)
+        user32.SetWindowPos(hwnd, None, 0, 0, 0, 0, SWP_FLAGS)
+    except Exception:
+        pass  # 실패해도 전체화면 자체는 동작한다
 
 
 def data_dir() -> Path:
@@ -1177,6 +1201,8 @@ class MainWindow(QMainWindow):
         pip.sync_toggled.connect(lambda _p, _on: self._sync_pips(force=True))
         pip.swap_requested.connect(self.swap_with_pip)
         pip.main_pause_requested.connect(self.toggle_pause)
+        pip.main_seek_requested.connect(lambda t: self.seek(t, absolute=True))
+        pip.main_speed_requested.connect(self.set_speed)
         w = max(int(self.area.width() * 0.32), 240)
         pip.resize(w, int(w * 9 / 16) + 30)
         n = len(self._pips)
@@ -1296,6 +1322,7 @@ class MainWindow(QMainWindow):
                 d.hide()
             self.area.set_overlay(True)
             self.showFullScreen()
+            _windows_fullscreen_border(self)
             self._hide_timer.start()
         self.a_full.setChecked(self.isFullScreen())
 

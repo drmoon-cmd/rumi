@@ -6,7 +6,7 @@ import os
 import random
 from enum import Enum
 
-from PySide6.QtCore import QDir, QSettings, QStandardPaths, Qt, Signal
+from PySide6.QtCore import QDir, QSettings, QSortFilterProxyModel, QStandardPaths, Qt, Signal
 from PySide6.QtGui import QAction, QFont, QKeySequence
 from PySide6.QtWidgets import (
     QAbstractItemView, QComboBox, QFileDialog, QFileSystemModel, QHBoxLayout, QInputDialog, QLineEdit,
@@ -217,6 +217,27 @@ class PlaylistTab(QListWidget):
         return None
 
 
+class _VideoFilterProxy(QSortFilterProxyModel):
+    """탐색기에서 폴더·드라이브와 동영상/재생목록 파일만 보이게 한다."""
+
+    def filterAcceptsRow(self, row: int, parent) -> bool:
+        model = self.sourceModel()
+        idx = model.index(row, 0, parent)
+        if model.isDir(idx):
+            return True
+        return os.path.splitext(model.fileName(idx))[1].lower() in _EXPLORER_EXTS
+
+    def lessThan(self, left, right) -> bool:
+        m = self.sourceModel()
+        ld, rd = m.isDir(left), m.isDir(right)
+        if ld != rd:
+            return ld  # 폴더 먼저
+        return natural_key(m.fileName(left)) < natural_key(m.fileName(right))
+
+
+_EXPLORER_EXTS = set(VIDEO_EXTENSIONS) | set(PLAYLIST_EXTENSIONS)
+
+
 class PlaylistPanel(QWidget):
     play_requested = Signal(str)
 
@@ -267,13 +288,14 @@ class PlaylistPanel(QWidget):
         self.fs = QFileSystemModel(self)
         self.fs.setRootPath("")
         self.fs.setFilter(QDir.AllDirs | QDir.Files | QDir.NoDotAndDotDot | QDir.Drives)
-        patterns = []
-        for ext in sorted(VIDEO_EXTENSIONS | set(PLAYLIST_EXTENSIONS)):
-            patterns += [f"*{ext}", f"*{ext.upper()}"]
-        self.fs.setNameFilters(patterns)
-        self.fs.setNameFilterDisables(False)  # 동영상이 아닌 파일은 숨김
+        # 동영상·재생목록 파일만 보이게 거른다. Qt 의 이름 패턴 필터 대신 확장자를 직접 검사해
+        # 한글 등 어떤 파일 이름이든 확장자만 맞으면 보이도록 한다.
+        self.fs_proxy = _VideoFilterProxy(self)
+        self.fs_proxy.setSourceModel(self.fs)
         self.explorer = QTreeView()
-        self.explorer.setModel(self.fs)
+        self.explorer.setModel(self.fs_proxy)
+        self.explorer.setSortingEnabled(True)
+        self.explorer.sortByColumn(0, Qt.AscendingOrder)
         self.explorer.setHeaderHidden(True)
         for col in (1, 2, 3):
             self.explorer.hideColumn(col)
@@ -403,11 +425,17 @@ class PlaylistPanel(QWidget):
         menu.exec(self.tabs.tabBar().mapToGlobal(pos))
 
     # ---- 탐색기 ----
+    def _view_index(self, path: str):
+        return self.fs_proxy.mapFromSource(self.fs.index(path))
+
+    def _path_of(self, view_index) -> str:
+        return self.fs.filePath(self.fs_proxy.mapToSource(view_index))
+
     def go_to_folder(self, path: str) -> None:
         """탐색기에서 그 폴더를 펼쳐 보여 준다. 폴더 목록은 백그라운드로 읽히므로
         아직 안 읽힌 상위 폴더가 있으면 다 읽힌 뒤 다시 시도한다."""
         self._goto = path
-        idx = self.fs.index(path)
+        idx = self._view_index(path)
         if idx.isValid():
             self.explorer.setCurrentIndex(idx)
             self.explorer.expand(idx)
@@ -416,7 +444,7 @@ class PlaylistPanel(QWidget):
     def _on_dir_loaded(self, loaded: str) -> None:
         target = getattr(self, "_goto", None)
         if target and os.path.normcase(target).startswith(os.path.normcase(loaded)):
-            idx = self.fs.index(target)
+            idx = self._view_index(target)
             if idx.isValid():
                 self.explorer.setCurrentIndex(idx)
                 self.explorer.expand(idx)
@@ -426,10 +454,10 @@ class PlaylistPanel(QWidget):
 
     def _explorer_paths(self) -> list[str]:
         rows = {i.row(): i for i in self.explorer.selectionModel().selectedRows(0)}
-        return [self.fs.filePath(i) for _, i in sorted(rows.items())]
+        return [self._path_of(i) for _, i in sorted(rows.items())]
 
     def _explorer_activated(self, index) -> None:
-        path = self.fs.filePath(index)
+        path = self._path_of(index)
         if os.path.isdir(path):
             return  # 폴더는 펼치기만 (기본 동작)
         if path.lower().endswith(PLAYLIST_EXTENSIONS):
@@ -629,7 +657,7 @@ class PlaylistPanel(QWidget):
         return {"current": self.tabs.currentIndex(),
                 "tabs": [{"name": t.name, "paths": t.paths()} for t in self.all_tabs()],
                 "explorer": self.explorer_btn.isChecked(),
-                "explorerPath": self.fs.filePath(cur) if cur.isValid() else "",
+                "explorerPath": self._path_of(cur) if cur.isValid() else "",
                 "split": self.split.sizes()}
 
     def restore_state(self, state: dict) -> None:
