@@ -60,6 +60,11 @@ def make_icon(kind: str, color: str) -> QIcon:
         for x, y, dx, dy in ((10, 10, 1, 1), (54, 10, -1, 1), (10, 54, 1, -1), (54, 54, -1, -1)):
             p.drawLine(x, y, x + 14 * dx, y)
             p.drawLine(x, y, x, y + 14 * dy)
+    elif kind == "record":
+        p.drawEllipse(QRectF(18, 18, 28, 28))
+        p.setBrush(Qt.NoBrush)
+        p.setPen(QPen(c, 4))
+        p.drawEllipse(QRectF(9, 9, 46, 46))
     elif kind == "close":
         p.setBrush(Qt.NoBrush)
         p.setPen(QPen(c, 6, Qt.SolidLine, Qt.RoundCap))

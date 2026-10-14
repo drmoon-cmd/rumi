@@ -5,11 +5,12 @@ from __future__ import annotations
 import json
 import os
 import platform
+import re
 import time
 from pathlib import Path
 
-from PySide6.QtCore import QPoint, QSettings, QStandardPaths, Qt, QTimer, qVersion
-from PySide6.QtGui import QAction, QActionGroup, QKeySequence
+from PySide6.QtCore import QPoint, QSettings, QStandardPaths, Qt, QTimer, QUrl, qVersion
+from PySide6.QtGui import QAction, QActionGroup, QDesktopServices, QKeySequence
 from PySide6.QtWidgets import (
     QApplication, QDockWidget, QFileDialog, QHBoxLayout, QInputDialog, QLabel, QMainWindow, QMenu,
     QMessageBox, QToolButton, QWidget,
@@ -25,6 +26,7 @@ from .mpv_widget import DEFAULT_HWDEC, HWDEC_MODES, MpvWidget
 from ..clips import Clip
 from ..dashcam import find_partner
 from ..tools import find_ffmpeg
+from ..recorder import StreamRecorder
 from ..media_tools import AudioSettings, build_audio_filter
 from .capture import build_contact_sheet
 from .clips_panel import ClipsPanel
@@ -76,6 +78,7 @@ SHORTCUT_HELP = """
 <tr><td><b>Ctrl + [ / ] / Backspace</b></td><td>소리 싱크 -0.1초 / +0.1초 / 초기화</td></tr>
 <tr><td><b>Ctrl + ,</b></td><td>환경 설정 (단축키·마우스)</td></tr>
 <tr><td><b>Ctrl + L</b></td><td>라이브러리 / 중복 정리</td></tr>
+<tr><td><b>Ctrl + Shift + R</b></td><td>녹화 시작/중지 (스트림 저장)</td></tr>
 <tr><td><b>Ctrl + G</b></td><td>화면 분할 보기 (CCTV) — 파일 골라 열기, Esc 닫기, Space 전체 일시정지</td></tr>
 </table>
 """
@@ -175,6 +178,9 @@ class MainWindow(QMainWindow):
         self._audio = AudioSettings()
         self._sub_style = dict(SUB_DEFAULTS)
         self._burst_left = 0
+        self._recording: str | None = None   # 녹화 중인 파일 경로
+        self._recorder: StreamRecorder | None = None  # 인터넷 스트림 저장 (ffmpeg)
+        self._record_started = 0.0
 
         self.video = MpvWidget()
         self.player = self.video.player
@@ -235,6 +241,7 @@ class MainWindow(QMainWindow):
 
         self.a_play = A("재생 / 일시정지", self.toggle_pause, "Space")
         self.a_stop = A("정지", self.stop)
+        self.a_record = A("녹화 시작/중지", self.toggle_record, "Ctrl+Shift+R", checkable=True)
         self.a_prev = A("이전 파일", lambda: self.play_neighbor(-1), "PgUp")
         self.a_next = A("다음 파일", lambda: self.play_neighbor(1), "PgDown")
         self.a_back5 = A("5초 뒤로", lambda: self.seek(-5), "Left")
@@ -338,6 +345,10 @@ class MainWindow(QMainWindow):
 
         m = mb.addMenu("재생(&P)")
         m.addActions([self.a_play, self.a_stop])
+        rec = m.addMenu("녹화 (스트림 저장)")
+        rec.addAction(self.a_record)
+        rec.addAction("녹화 폴더 열기", self.open_record_dir)
+        rec.addAction("녹화 폴더 바꾸기…", self.choose_record_dir)
         m.addSeparator()
         m.addActions([self.a_prev, self.a_next])
         m.addSeparator()
@@ -452,6 +463,9 @@ class MainWindow(QMainWindow):
         c.volume_set.connect(lambda val: self._set_prop("volume", val))
         c.mute_toggle.connect(self.toggle_mute)
         c.fullscreen_toggle.connect(self.toggle_fullscreen)
+        c.record_toggle.connect(self.toggle_record)
+        self._record_timer = QTimer(self, interval=1000)
+        self._record_timer.timeout.connect(self._update_record_label)
         c.playlist_toggle.connect(self.a_playlist.trigger)
         v.context_menu_requested.connect(lambda pos: self.main_menu().exec(pos))
         top = self.area.topbar
@@ -514,6 +528,7 @@ class MainWindow(QMainWindow):
         self._save_timer.stop()
         self._reveal.stop()
         self._watchdog.stop()
+        self.stop_record(report=False)
         if is_fullscreen(self):
             self.toggle_fullscreen()
         s = self.settings
@@ -592,6 +607,7 @@ class MainWindow(QMainWindow):
     def play(self, path: str, start: float | None = None) -> None:
         """파일 재생. start 를 주면 이어보기 대신 그 위치부터 재생한다."""
         self._end_clip_mode()
+        self.stop_record(local_only=True)  # 인터넷 스트림 저장은 다른 영상을 봐도 계속된다
         self._save_position()
         self._skip_resume = start is not None
         self.seek_preview.clear_cache()
@@ -613,6 +629,7 @@ class MainWindow(QMainWindow):
             self.osd("목록의 처음/끝입니다")
 
     def stop(self) -> None:
+        self.stop_record(local_only=True)
         self._save_position()
         self.player.command("stop")
         self._current = None
@@ -672,6 +689,133 @@ class MainWindow(QMainWindow):
     def toggle_mute(self) -> None:
         self.player.mute = not self.player.mute
         self.osd("음소거" if self.player.mute else "음소거 해제")
+
+    # ------------------------------------------------------------------ 녹화
+    def record_dir(self) -> str:
+        default = os.path.join(QStandardPaths.writableLocation(QStandardPaths.MoviesLocation), "Rumi 녹화")
+        return self.settings.value("recordDir", "") or default
+
+    def choose_record_dir(self) -> None:
+        d = QFileDialog.getExistingDirectory(self, "녹화 파일을 저장할 폴더", self.record_dir())
+        if d:
+            self.settings.setValue("recordDir", d)
+            self.osd(f"녹화 폴더: {d}")
+
+    def open_record_dir(self) -> None:
+        d = self.record_dir()
+        os.makedirs(d, exist_ok=True)
+        QDesktopServices.openUrl(QUrl.fromLocalFile(d))
+
+    def toggle_record(self) -> None:
+        if self._recording:
+            self.stop_record()
+        else:
+            self.start_record()
+
+    def start_record(self) -> None:
+        """재생 중인 영상을 다시 인코딩하지 않고 그대로 파일에 저장한다 (화질 손실 없음).
+
+        - 인터넷 스트림: ffmpeg 가 처음부터 따로 받아 저장한다. 예고편처럼 끝이 있는 영상은
+          끝까지 저장되면 저절로 끝나고, 생방송은 중지할 때까지 녹화한다.
+        - 내 PC 의 파일: 지금 위치부터 중지할 때까지를 저장한다.
+        암호화(DRM)된 스트림은 저장되지 않는다."""
+        if self._current is None:
+            self.osd("재생 중인 영상이 없습니다")
+            self.a_record.setChecked(False)
+            return
+        try:
+            title = self.player.media_title or ""
+        except Exception:
+            title = ""
+        title = title or os.path.basename(self._current.split("?")[0]) or "stream"
+        title = os.path.splitext(title)[0] if re.search(r"\.\w{2,4}$", title) else title
+        title = re.sub(r'[\\/:*?"<>|\s]+', "_", title).strip("._")[:60] or "stream"
+        folder = self.record_dir()
+        is_stream = "://" in self._current
+        try:
+            os.makedirs(folder, exist_ok=True)
+            path = os.path.join(folder, f"{title}_{time.strftime('%Y%m%d_%H%M%S')}.mkv")
+            if is_stream:
+                ffmpeg = find_ffmpeg()
+                if not ffmpeg:
+                    raise RuntimeError("변환 도구(ffmpeg)를 찾지 못했습니다.")
+                self._recorder = StreamRecorder(ffmpeg, self)
+                self._recorder.progress.connect(self._update_record_label)
+                self._recorder.finished.connect(self._on_record_finished)
+                self._recorder.start(self._current, path)
+            else:
+                self.player["stream-record"] = path
+        except Exception as e:
+            self.a_record.setChecked(False)
+            QMessageBox.warning(self, "녹화", f"녹화를 시작하지 못했습니다.\n\n{e}")
+            return
+        self._recording = path
+        self._record_started = time.monotonic()
+        if not is_stream:
+            self._record_timer.start()
+        self._update_record_label()
+        self.a_record.setChecked(True)
+        self.osd("● 저장 시작 (끝까지 받으면 저절로 멈춥니다)" if is_stream else "● 녹화 시작")
+
+    def stop_record(self, report: bool = True, local_only: bool = False) -> None:
+        path = self._recording
+        if not path:
+            return
+        if self._recorder is not None:
+            if local_only:
+                return
+            if report:
+                self._recorder.stop()  # 마무리되면 _on_record_finished 가 불린다
+            else:
+                self._recorder.shutdown()
+                self._recording = None
+            return
+        self._recording = None
+        try:
+            self.player["stream-record"] = ""
+        except Exception:
+            pass
+        self._record_timer.stop()
+        self.controls.set_recording(None)
+        self.a_record.setChecked(False)
+        if report:
+            QTimer.singleShot(500, lambda: self._report_record(path))
+
+    def _update_record_label(self, size: int | None = None) -> None:
+        secs = time.monotonic() - self._record_started
+        text = f"● 녹화 {fmt_time(secs)}"
+        if size:
+            text += f" · {size / 1_048_576:.1f} MB"
+        self.controls.set_recording(text)
+
+    def _on_record_finished(self, path: str, ok: bool, message: str) -> None:
+        self._recording = None
+        if self._recorder is not None:
+            self._recorder.deleteLater()
+            self._recorder = None
+        self.controls.set_recording(None)
+        self.a_record.setChecked(False)
+        if ok:
+            size = os.path.getsize(path) / 1_048_576
+            self.osd(f"저장 완료: {os.path.basename(path)} ({size:.1f} MB)")
+            box = QMessageBox(QMessageBox.Information, "녹화", f"{message}\n\n{path}\n({size:.1f} MB)", parent=self)
+            folder_btn = box.addButton("폴더 열기", QMessageBox.ActionRole)
+            box.addButton(QMessageBox.Ok)
+            box.exec()
+            if box.clickedButton() is folder_btn:
+                reveal_in_file_manager(path)
+        else:
+            QMessageBox.warning(self, "녹화", message)
+
+    def _report_record(self, path: str) -> None:
+        size = os.path.getsize(path) if os.path.exists(path) else 0
+        if size < 10_000:
+            if os.path.exists(path):
+                os.remove(path)
+            QMessageBox.warning(self, "녹화", "녹화된 내용이 없습니다.\n\n"
+                                "녹화 시간이 너무 짧았거나, 녹화를 지원하지 않는 형식일 수 있습니다.")
+            return
+        self.osd(f"녹화 저장: {os.path.basename(path)} ({size / 1_048_576:.1f} MB)")
 
     def screenshot(self) -> None:
         if self._current:

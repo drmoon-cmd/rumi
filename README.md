@@ -35,6 +35,13 @@ Windows, macOS, Linux에서 동작합니다 (Python + Qt(PySide6) + libmpv).
 - **자막 모양**: 글꼴, 크기, 글자색, 테두리, 세로 위치, 배경 상자, ASS 자막에도 적용
 - **환경 설정** (Ctrl+,): 모든 단축키 바꾸기, 마우스(클릭/더블클릭/가운데/휠/Ctrl+휠) 동작 지정
 
+### 녹화 (스트림 저장)
+- **재생 → 녹화** 또는 조작 줄의 ◉ 버튼 (Ctrl+Shift+R): 재생 중인 영상을 다시 인코딩하지 않고 그대로 저장 (화질 손실 없음, .mkv)
+- 인터넷 주소(http/https, HLS m3u8, RTMP, RTSP): 처음부터 따로 받아 저장. 예고편처럼 끝이 있는 영상은 끝까지 받으면 저절로 멈추고, 생방송·IP 카메라는 중지할 때까지 녹화. 다른 영상을 봐도 저장은 계속됨
+- 내 PC 파일: 지금 위치부터 중지할 때까지 저장
+- 기본 저장 위치: 동영상 폴더의 `Rumi 녹화` (메뉴에서 바꾸기·열기)
+- 암호화(DRM)된 스트림과 로그인이 필요한 주소는 저장되지 않음. 저장한 영상은 개인 감상용으로만 써 주세요
+
 ### 화면 분할 보기 (CCTV)
 - **화면 → 화면 분할 보기** (Ctrl+G): 파일을 여러 개 고르면 2·4·9·16분할 격자로 전체화면에 동시 재생 (개수에 맞춰 분할 자동 선택). '재생목록 영상으로 열기'도 가능
 - 아래 조작 줄: 모두 재생/일시정지, 모든 화면 같은 위치로 탐색, 배속, 파일 열기·폴더 열기, 분할 바꾸기, 모두 소리 끄기
@@ -107,13 +114,13 @@ pytest            # 라이브러리/중복 정리 로직 테스트
 
 | OS | 명령 | 결과 |
 |---|---|---|
-| Windows | `python packaging/build.py` 다음 `iscc packaging\windows\rumi.iss` | `dist/RumiSetup-0.3.5.exe` (시작 메뉴, 파일 연결 선택) |
+| Windows | `python packaging/build.py` 다음 `iscc packaging\windows\rumi.iss` | `dist/RumiSetup-0.3.6.exe` (시작 메뉴, 파일 연결 선택) |
 | macOS | `python packaging/build.py` | `dist/Rumi.app` |
 | Linux | `python packaging/build.py` | `dist/Rumi/Rumi` |
 
 Windows에서는 `libmpv-2.dll`을 `packaging/windows/` 아래 아무 곳에 두거나, `RUMI_LIBMPV` 환경 변수로 경로를 지정하세요.
 
-각 OS에서 직접 빌드하지 않아도 됩니다. GitHub의 **Actions → build → Run workflow**를 실행하면(또는 `v0.3.5` 같은 태그를 푸시하면) 세 OS용 설치 파일이 한 번에 만들어집니다.
+각 OS에서 직접 빌드하지 않아도 됩니다. GitHub의 **Actions → build → Run workflow**를 실행하면(또는 `v0.3.6` 같은 태그를 푸시하면) 세 OS용 설치 파일이 한 번에 만들어집니다.
 
 ## 데이터 위치
 

@@ -67,6 +67,9 @@ class ControlBar(QWidget):
     mute_toggle = Signal()
     fullscreen_toggle = Signal()
     playlist_toggle = Signal()
+    record_toggle = Signal()
+
+    REC_COLOR = "#e53935"
 
     def __init__(self, parent=None):
         super().__init__(parent)
@@ -99,6 +102,11 @@ class ControlBar(QWidget):
         btn_stop = button("stop", "정지", self.stop)
         btn_prev = button("prev", "이전 파일 (PgUp)", self.prev)
         btn_next = button("next", "다음 파일 (PgDn)", self.next)
+        self.btn_rec = button("record", "녹화 시작/중지 (Ctrl+Shift+R) - 재생 중인 영상·스트림을 파일로 저장",
+                              self.record_toggle)
+        self.rec_label = QLabel()
+        self.rec_label.setStyleSheet(f"color: {self.REC_COLOR}; font-weight: bold;")
+        self.rec_label.hide()
         self.btn_mute = button("volume", "음소거 (M)", self.mute_toggle)
         btn_list = button("list", "재생목록 (F9)", self.playlist_toggle)
         btn_full = button("fullscreen", "전체화면 (Enter)", self.fullscreen_toggle)
@@ -113,8 +121,9 @@ class ControlBar(QWidget):
 
         row = QHBoxLayout()
         row.setContentsMargins(0, 0, 0, 0)
-        for w in (self.btn_play, btn_stop, btn_prev, btn_next):
+        for w in (self.btn_play, btn_stop, btn_prev, btn_next, self.btn_rec):
             row.addWidget(w)
+        row.addWidget(self.rec_label)
         row.addSpacing(8)
         row.addWidget(self.time_label)
         row.addSpacing(8)
@@ -175,7 +184,17 @@ class ControlBar(QWidget):
         """테마 글자색으로 아이콘을 다시 그린다 (테마가 바뀔 때도 호출)."""
         color = QApplication.palette().buttonText().color().name()
         for b, kind in self._icons.items():
-            b.setIcon(make_icon(kind, color))
+            if kind == "record_on":
+                b.setIcon(make_icon("record", self.REC_COLOR))
+            else:
+                b.setIcon(make_icon(kind, color))
+
+    def set_recording(self, text: str | None) -> None:
+        """녹화 중이면 버튼을 빨갛게 하고 옆에 경과 시간을 보인다."""
+        self._icons[self.btn_rec] = "record_on" if text else "record"
+        self.rec_label.setText(text or "")
+        self.rec_label.setVisible(bool(text))
+        self.refresh_icons()
 
     def set_speed(self, s: float):
         self.speed_label.setText("" if abs(s - 1.0) < 1e-6 else f"{s:.2f}x")
