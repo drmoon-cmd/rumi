@@ -12,6 +12,9 @@ import sys
 import tempfile
 
 sys.path.insert(0, os.path.join(os.path.dirname(__file__), ".."))
+# Windows 빌드 콘솔(cp1252)에서도 한글 파일 이름·메시지를 출력할 수 있게
+for _stream in (sys.stdout, sys.stderr):
+    _stream.reconfigure(encoding="utf-8", errors="replace")
 
 from rumi.merge import build_merge  # noqa: E402
 from rumi.recorder import record_args  # noqa: E402
