@@ -34,6 +34,8 @@ jobs:
           echo "libmpv SHA-256: $(sha256sum mpv-dev.7z)"
           7z x mpv-dev.7z -opackaging/windows/mpv
       - run: python packaging/build.py
+      - name: ffmpeg 점검 (동영상 합치기·녹화)
+        run: python packaging/smoke_ffmpeg.py
       - name: 설치 파일 만들기 (Inno Setup)
         run: |
           choco install innosetup -y --no-progress

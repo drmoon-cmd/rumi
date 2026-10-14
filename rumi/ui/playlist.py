@@ -240,6 +240,7 @@ _EXPLORER_EXTS = set(VIDEO_EXTENSIONS) | set(PLAYLIST_EXTENSIONS)
 
 class PlaylistPanel(QWidget):
     play_requested = Signal(str)
+    merge_requested = Signal(list)   # 여러 파일을 하나로 합치기
 
     def __init__(self, parent=None):
         super().__init__(parent)
@@ -481,6 +482,8 @@ class PlaylistPanel(QWidget):
         menu.addAction("지금 탭을 이것으로 바꾸고 재생", lambda: self._replace_and_play(paths))
         name = os.path.basename(first.rstrip("/\\")) or first
         menu.addAction("새 탭으로 열기", lambda: self.new_tab(name, paths))
+        if len(paths) > 1 or os.path.isdir(first):
+            menu.addAction("하나로 합치기…", lambda: self.merge_requested.emit(paths))
         menu.addSeparator()
         menu.addAction("파일 위치 열기", lambda: reveal_in_file_manager(first))
         menu.exec(self.explorer.viewport().mapToGlobal(pos))
@@ -646,6 +649,9 @@ class PlaylistPanel(QWidget):
                 copy.addSeparator()
             copy.addAction("새 탭으로…", lambda: self.new_tab(paths=selected))
             menu.addAction("목록에서 빼기", tab.remove_selected)
+            if len(selected) > 1:
+                menu.addAction(f"선택한 {len(selected)}개 하나로 합치기…",
+                               lambda: self.merge_requested.emit(selected))
             menu.addSeparator()
         menu.addAction("이름순 정렬", tab.sort_by_name)
         menu.addAction("이 탭 비우기", self.clear)

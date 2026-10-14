@@ -36,6 +36,7 @@ from .dialogs import (
     VideoAdjustDialog,
 )
 from .fullscreen import enter_fullscreen, is_fullscreen, leave_fullscreen
+from .merge_dialog import MergeDialog
 from .hover_reveal import HoverReveal, bottom_zone, top_zone
 from .seek_preview import SeekPreview
 from .watchdog import HangWatchdog
@@ -79,6 +80,7 @@ SHORTCUT_HELP = """
 <tr><td><b>Ctrl + ,</b></td><td>환경 설정 (단축키·마우스)</td></tr>
 <tr><td><b>Ctrl + L</b></td><td>라이브러리 / 중복 정리</td></tr>
 <tr><td><b>Ctrl + Shift + R</b></td><td>녹화 시작/중지 (스트림 저장)</td></tr>
+<tr><td><b>Ctrl + Shift + M</b></td><td>동영상 합치기 (.ts 조각 등 여러 파일을 하나로)</td></tr>
 <tr><td><b>Ctrl + G</b></td><td>화면 분할 보기 (CCTV) — 파일 골라 열기, Esc 닫기, Space 전체 일시정지</td></tr>
 </table>
 """
@@ -237,6 +239,7 @@ class MainWindow(QMainWindow):
         self.a_open = A("파일 열기…", self.open_files_dialog, QKeySequence.Open)
         self.a_open_folder = A("폴더 열기…", self.open_folder_dialog, "Ctrl+Shift+O")
         self.a_open_url = A("URL 열기…", self.open_url_dialog, "Ctrl+U")
+        self.a_merge = A("동영상 합치기 (여러 파일을 하나로)…", lambda: self.open_merge_dialog(), "Ctrl+Shift+M")
         self.a_quit = A("끝내기", self.close, QKeySequence.Quit)
 
         self.a_play = A("재생 / 일시정지", self.toggle_pause, "Space")
@@ -338,6 +341,8 @@ class MainWindow(QMainWindow):
         m.addActions([self.a_open, self.a_open_folder, self.a_open_url])
         self.recent_menu = m.addMenu("최근 파일")
         self.recent_menu.aboutToShow.connect(self._fill_recent_menu)
+        m.addSeparator()
+        m.addAction(self.a_merge)
         m.addSeparator()
         m.addAction(self.a_prefs)
         m.addSeparator()
@@ -478,6 +483,7 @@ class MainWindow(QMainWindow):
         c.seek_hover_end.connect(self.seek_preview.hide_preview)
 
         self.playlist.play_requested.connect(self.play)
+        self.playlist.merge_requested.connect(self.open_merge_dialog)
         self.clips_panel.play_requested.connect(self.play_clips)
         v.pause_changed.connect(lambda _p: self._sync_pips(force=True))
         v.start_observing()
@@ -588,6 +594,16 @@ class MainWindow(QMainWindow):
         if d:
             self.settings.setValue("lastDir", d)
             self.open_paths([d])
+
+    def open_merge_dialog(self, paths: list[str] | None = None) -> None:
+        if not paths:
+            exts = " ".join(f"*{e}" for e in sorted(VIDEO_EXTENSIONS))
+            paths, _ = QFileDialog.getOpenFileNames(
+                self, "하나로 합칠 동영상 (여러 개 선택)", self.settings.value("lastDir", ""),
+                f"동영상 ({exts});;모든 파일 (*)")
+            if not paths:
+                return
+        MergeDialog(paths, self).exec()
 
     def open_url_dialog(self) -> None:
         url, ok = QInputDialog.getText(self, "URL 열기", "스트림 주소 (http, https, rtsp 등):")

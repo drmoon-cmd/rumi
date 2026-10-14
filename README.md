@@ -35,6 +35,12 @@ Windows, macOS, Linux에서 동작합니다 (Python + Qt(PySide6) + libmpv).
 - **자막 모양**: 글꼴, 크기, 글자색, 테두리, 세로 위치, 배경 상자, ASS 자막에도 적용
 - **환경 설정** (Ctrl+,): 모든 단축키 바꾸기, 마우스(클릭/더블클릭/가운데/휠/Ctrl+휠) 동작 지정
 
+### 동영상 합치기
+- **파일 → 동영상 합치기** (Ctrl+Shift+M): 나뉘어 저장된 .ts 조각 등 여러 파일을 다시 인코딩 없이 하나로 (mp4·mkv·ts)
+- 이름의 번호 순서대로 자동 정렬(조각_2 → 조각_10), 끌어서 순서 바꾸기, 추가·빼기
+- 재생목록에서 여러 개 선택 후 오른쪽 클릭 → "하나로 합치기", 탐색기에서 폴더를 오른쪽 클릭하면 폴더 안 동영상을 모두 합치기
+- 모든 파일의 형식(코덱·해상도)이 같아야 함
+
 ### 녹화 (스트림 저장)
 - **재생 → 녹화** 또는 조작 줄의 ◉ 버튼 (Ctrl+Shift+R): 재생 중인 영상을 다시 인코딩하지 않고 그대로 저장 (화질 손실 없음, .mkv)
 - 인터넷 주소(http/https, HLS m3u8, RTMP, RTSP): 처음부터 따로 받아 저장. 예고편처럼 끝이 있는 영상은 끝까지 받으면 저절로 멈추고, 생방송·IP 카메라는 중지할 때까지 녹화. 다른 영상을 봐도 저장은 계속됨
@@ -114,13 +120,13 @@ pytest            # 라이브러리/중복 정리 로직 테스트
 
 | OS | 명령 | 결과 |
 |---|---|---|
-| Windows | `python packaging/build.py` 다음 `iscc packaging\windows\rumi.iss` | `dist/RumiSetup-0.3.6.exe` (시작 메뉴, 파일 연결 선택) |
+| Windows | `python packaging/build.py` 다음 `iscc packaging\windows\rumi.iss` | `dist/RumiSetup-0.3.7.exe` (시작 메뉴, 파일 연결 선택) |
 | macOS | `python packaging/build.py` | `dist/Rumi.app` |
 | Linux | `python packaging/build.py` | `dist/Rumi/Rumi` |
 
 Windows에서는 `libmpv-2.dll`을 `packaging/windows/` 아래 아무 곳에 두거나, `RUMI_LIBMPV` 환경 변수로 경로를 지정하세요.
 
-각 OS에서 직접 빌드하지 않아도 됩니다. GitHub의 **Actions → build → Run workflow**를 실행하면(또는 `v0.3.6` 같은 태그를 푸시하면) 세 OS용 설치 파일이 한 번에 만들어집니다.
+각 OS에서 직접 빌드하지 않아도 됩니다. GitHub의 **Actions → build → Run workflow**를 실행하면(또는 `v0.3.7` 같은 태그를 푸시하면) 세 OS용 설치 파일이 한 번에 만들어집니다.
 
 ## 데이터 위치
 
