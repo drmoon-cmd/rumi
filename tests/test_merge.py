@@ -1,11 +1,11 @@
 import os
+import re
 
 from rumi.merge import build_merge, default_output, expand_paths
-from rumi.ui.util import natural_key
 
 
-def _key(p):
-    return natural_key(os.path.basename(p))
+def _key(p):  # rumi.ui.util.natural_key 와 같은 규칙 (GUI 모듈은 CI 에서 불러오지 않는다)
+    return [int(t) if t.isdigit() else t.lower() for t in re.split(r"(\d+)", os.path.basename(p))]
 
 
 def test_expand_paths_sorts_folder_naturally_and_skips_non_video(tmp_path):
