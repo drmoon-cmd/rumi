@@ -88,11 +88,14 @@ class AudioDialog(QDialog):
     def __init__(self, settings: AudioSettings, delay: float, parent=None):
         super().__init__(parent)
         self.setWindowTitle("소리 설정")
-        self.s = AudioSettings(settings.normalize, settings.bass, settings.treble)
+        self.s = AudioSettings(settings.normalize, settings.bass, settings.treble, settings.dialogue)
 
         self.normalize = QCheckBox("소리 크기 자동 맞춤 (작은 대화는 키우고 큰 소리는 줄임)")
         self.normalize.setChecked(self.s.normalize)
         self.normalize.toggled.connect(self._emit)
+        self.dialogue = QCheckBox("대사 크게 (배경음·효과음은 그대로 두고 사람 목소리를 키움)")
+        self.dialogue.setChecked(self.s.dialogue)
+        self.dialogue.toggled.connect(self._emit)
         self.preset = QComboBox()
         self.preset.addItems(list(EQ_PRESETS))
         self.preset.addItem("사용자 지정")
@@ -110,6 +113,7 @@ class AudioDialog(QDialog):
 
         form = QFormLayout()
         form.addRow(self.normalize)
+        form.addRow(self.dialogue)
         form.addRow("이퀄라이저", self.preset)
         form.addRow("저음 (dB)", bass_w)
         form.addRow("고음 (dB)", treble_w)
@@ -150,12 +154,14 @@ class AudioDialog(QDialog):
         self.preset.setCurrentText(name)
 
     def _emit(self, *_):
-        self.s = AudioSettings(self.normalize.isChecked(), self.bass.value(), self.treble.value())
+        self.s = AudioSettings(self.normalize.isChecked(), self.bass.value(), self.treble.value(),
+                               self.dialogue.isChecked())
         self._sync_preset()
         self.changed.emit(self.s)
 
     def reset(self) -> None:
         self.normalize.setChecked(False)
+        self.dialogue.setChecked(False)
         self.preset.setCurrentText("기본")
         self._apply_preset(0)
         self.delay.setValue(0)
@@ -408,3 +414,57 @@ class BookmarksDialog(QDialog):
         if 0 <= r < len(self._rows):
             self.db.delete_bookmark(self._rows[r][0])
             self.refresh()
+
+
+# ------------------------------------------------------------------ 오프닝·엔딩 건너뛰기
+class SkipDialog(QDialog):
+    """폴더마다 오프닝(앞부분)·엔딩(뒷부분) 길이를 정해 두면 그 폴더의 영상에서 자동으로 건너뛴다."""
+
+    def __init__(self, folder: str, intro: float, outro: float, now: float, duration: float, parent=None):
+        super().__init__(parent)
+        self.setWindowTitle("오프닝·엔딩 건너뛰기")
+        self._now, self._duration = now, duration
+        info = QLabel(f"이 폴더의 영상에 적용됩니다:\n{folder}\n\n0 초로 두면 건너뛰지 않습니다.")
+        info.setWordWrap(True)
+
+        def spin(value: float) -> QSpinBox:
+            s = QSpinBox()
+            s.setRange(0, 1800)
+            s.setSuffix(" 초")
+            s.setValue(int(value))
+            return s
+
+        self.intro = spin(intro)
+        self.outro = spin(outro)
+        intro_now = QPushButton(f"지금 위치까지 ({fmt_time(now)})")
+        intro_now.setAutoDefault(False)
+        intro_now.clicked.connect(lambda: self.intro.setValue(int(self._now)))
+        outro_now = QPushButton(f"지금 위치부터 ({fmt_time(now)})")
+        outro_now.setAutoDefault(False)
+        outro_now.setEnabled(duration > 0)
+        outro_now.clicked.connect(lambda: self.outro.setValue(max(int(self._duration - self._now), 0)))
+        row1, row2 = QHBoxLayout(), QHBoxLayout()
+        row1.addWidget(self.intro, 1)
+        row1.addWidget(intro_now)
+        row2.addWidget(self.outro, 1)
+        row2.addWidget(outro_now)
+
+        form = QFormLayout()
+        form.addRow("오프닝 (처음부터)", row1)
+        form.addRow("엔딩 (끝나기 전)", row2)
+        hint = QLabel("엔딩에 닿으면 재생목록의 다음 영상으로 넘어갑니다. 이어보기 위치가 오프닝보다 뒤면 이어보기가 우선합니다.")
+        hint.setWordWrap(True)
+        hint.setStyleSheet("color: palette(mid);")
+        buttons = QDialogButtonBox(QDialogButtonBox.Ok | QDialogButtonBox.Cancel)
+        clear = buttons.addButton("이 폴더 설정 지우기", QDialogButtonBox.ResetRole)
+        clear.clicked.connect(lambda: (self.intro.setValue(0), self.outro.setValue(0)))
+        buttons.accepted.connect(self.accept)
+        buttons.rejected.connect(self.reject)
+        lay = QVBoxLayout(self)
+        lay.addWidget(info)
+        lay.addLayout(form)
+        lay.addWidget(hint)
+        lay.addWidget(buttons)
+
+    def values(self) -> tuple[int, int]:
+        return self.intro.value(), self.outro.value()

@@ -36,6 +36,14 @@ jobs:
       - run: python packaging/build.py
       - name: ffmpeg 점검 (동영상 합치기·녹화)
         run: python packaging/smoke_ffmpeg.py
+      - name: 화질 개선 셰이더 포함 확인
+        shell: pwsh
+        run: |
+          $need = @("rumi_sharpen.glsl", "anime4k\Anime4K_Upscale_CNN_x2_M.glsl", "anime4k\LICENSE")
+          foreach ($f in $need) {
+            if (-not (Test-Path "dist\Rumi\_internal\rumi\shaders\$f")) { throw "셰이더가 빠졌습니다: $f" }
+          }
+          Write-Host "셰이더 포함 확인"
       - name: 설치 파일 만들기 (Inno Setup)
         run: |
           choco install innosetup -y --no-progress

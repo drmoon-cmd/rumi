@@ -17,14 +17,18 @@ class AudioSettings:
     normalize: bool = False   # 소리 크기 자동 맞춤 (작은 소리는 키우고 큰 소리는 줄임)
     bass: int = 0             # 저음 dB (-12 ~ 12)
     treble: int = 0           # 고음 dB (-12 ~ 12)
+    dialogue: bool = False    # 대사 크게 (가운데 목소리를 키우고 배경음은 그대로)
 
     def is_default(self) -> bool:
-        return not self.normalize and self.bass == 0 and self.treble == 0
+        return not self.normalize and self.bass == 0 and self.treble == 0 and not self.dialogue
 
 
 def build_audio_filter(s: AudioSettings) -> str:
     """mpv 'af' 속성 값. 아무 효과도 없으면 빈 문자열."""
     parts = []
+    if s.dialogue:
+        # 5.1 등은 먼저 2채널로 모은 뒤, 가운데(대사) 성분을 찾아 키운다
+        parts.append("lavfi=[aformat=channel_layouts=stereo,dialoguenhance=original=1:enhance=2:voice=4,aformat=channel_layouts=stereo]")
     if s.bass:
         parts.append(f"lavfi=[bass=g={max(min(s.bass, 12), -12)}:f=110]")
     if s.treble:

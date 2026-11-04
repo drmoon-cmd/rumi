@@ -7,6 +7,7 @@ mpv 이벤트는 mpv 스레드에서 들어오므로 모두 Qt 시그널로 넘�
 from __future__ import annotations
 
 import locale
+import os
 import time
 from collections import deque
 
@@ -16,6 +17,8 @@ from PySide6.QtGui import QOpenGLContext
 from PySide6.QtOpenGLWidgets import QOpenGLWidget
 
 import mpv
+
+from .. import picture
 
 # GPU 가속이 없는 환경(가상 머신, 원격 데스크톱, 드라이버 미설치)의 소프트웨어 렌더러.
 # 기본 고품질 스케일러 셰이더가 너무 무거워 영상이 검게 나오므로 가벼운 설정으로 바꾼다.
@@ -32,10 +35,8 @@ HWDEC_MODES = {
 }
 DEFAULT_HWDEC = "no"
 
-# 'fast' 프로필이 바꾸는 렌더링 옵션. 호환 모드를 끌 때 원래 값으로 되돌리기 위해 기억해 둔다.
-COMPAT_OPTIONS = ("scale", "dscale", "cscale", "dither", "correct-downscaling",
-                  "linear-downscaling", "sigmoid-upscaling", "hdr-compute-peak",
-                  "allow-delayed-peak-detect")
+# 호환 모드('fast' 프로필)·화질 개선·HDR 보정이 바꾸는 렌더링 옵션. 끌 때 원래 값으로 되돌린다.
+COMPAT_OPTIONS = picture.TOUCHED_OPTIONS
 
 
 def _get_proc_address(_ctx, name: bytes) -> int:
@@ -101,6 +102,8 @@ class MpvWidget(QOpenGLWidget):
         self._pending_load: tuple[str, dict] | None = None
         self.gl_renderer = ""
         self.compat_mode = False
+        self.quality = "default"
+        self.hdr = "auto"
         self._quality_defaults = {}
         for name in COMPAT_OPTIONS:
             try:
@@ -109,6 +112,8 @@ class MpvWidget(QOpenGLWidget):
                 pass
         self._proc_fn = mpv.MpvGlGetProcAddressFn(_get_proc_address)
         self._frame_ready.connect(self.update, Qt.QueuedConnection)
+        # 화면에 실제로 그려진 시각을 알려 주면 '부드러운 움직임'의 박자가 정확해진다
+        self.frameSwapped.connect(self._report_swap)
         self.setMouseTracking(True)
         self.setFocusPolicy(Qt.StrongFocus)
         self.setMinimumSize(320, 180)
@@ -245,16 +250,49 @@ class MpvWidget(QOpenGLWidget):
 
     def set_compat_mode(self, on: bool) -> None:
         """호환 모드: 가벼운 스케일러로 그래픽 부담을 줄인다 (화면이 깨지거나 검게 나올 때)."""
-        on = on or self.software_rendering
-        self.compat_mode = on
-        if on:
-            self.player.command("apply-profile", "fast")
-        else:
-            for name, value in self._quality_defaults.items():
-                try:
-                    self.player[name] = value
-                except (AttributeError, KeyError, TypeError, SystemError):
-                    pass
+        self.compat_mode = on or self.software_rendering
+        self._apply_render()
+
+    def set_picture(self, quality: str | None = None, hdr: str | None = None) -> None:
+        """화질 개선(확대 방식·셰이더)과 HDR 색 보정. 호환 모드가 켜져 있으면 호환 모드가 우선한다."""
+        if quality is not None:
+            self.quality = quality if quality in picture.QUALITY_PRESETS else "default"
+        if hdr is not None:
+            self.hdr = hdr if hdr in picture.HDR_PRESETS else "auto"
+        self._apply_render()
+
+    def _apply_render(self) -> None:
+        p = self.player
+        for name, value in self._quality_defaults.items():
+            self._set_option(name, value)
+        shaders: list[str] = []
+        if not self.compat_mode:
+            for name, value in picture.quality_options(self.quality).items():
+                self._set_option(name, value)
+            shaders = [f for f in picture.shader_paths(self.quality) if os.path.exists(f)]
+        for name, value in picture.hdr_options(self.hdr).items():
+            self._set_option(name, value)
+        if self.compat_mode:
+            p.command("apply-profile", "fast")
+        self._set_option("glsl-shaders", shaders)
+
+    def set_smooth(self, on: bool, refresh_hz: float | None = None) -> None:
+        for name, value in picture.smooth_options(on, refresh_hz).items():
+            self._set_option(name, value)
+
+    def _set_option(self, name: str, value) -> None:
+        try:
+            self.player[name] = value
+        except (AttributeError, KeyError, TypeError, SystemError):
+            if name == "display-fps-override":  # 옛 mpv 의 이름
+                self._set_option("override-display-fps", value)
+
+    def _report_swap(self) -> None:
+        if self._render_ctx is not None:
+            try:
+                self._render_ctx.report_swap()
+            except Exception:
+                pass
 
     def shutdown(self) -> None:
         """창을 닫기 전에 호출. 렌더 컨텍스트는 GL 컨텍스트가 활성일 때 해제해야 한다."""

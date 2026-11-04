@@ -12,6 +12,8 @@ a = Analysis(
     [os.path.join(SPECPATH, "launcher.py")],
     pathex=[root],
     binaries=binaries,
+    # 화질 개선 셰이더 (rumi/picture.py 가 rumi/shaders 에서 찾는다)
+    datas=[(os.path.join(root, "rumi", "shaders"), os.path.join("rumi", "shaders"))],
     # 구간 내보내기용 ffmpeg 는 imageio_ffmpeg 패키지(OS별 정적 빌드)와 함께 들어간다
     hiddenimports=["mpv", "imageio_ffmpeg"],
     excludes=["tkinter", "PySide6.QtWebEngineCore", "PySide6.QtQml", "PySide6.QtQuick", "PySide6.Qt3DCore"],

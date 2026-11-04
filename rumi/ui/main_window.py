@@ -12,7 +12,7 @@ from pathlib import Path
 from PySide6.QtCore import QPoint, QSettings, QStandardPaths, Qt, QTimer, QUrl, qVersion
 from PySide6.QtGui import QAction, QActionGroup, QDesktopServices, QKeySequence
 from PySide6.QtWidgets import (
-    QApplication, QDockWidget, QFileDialog, QHBoxLayout, QInputDialog, QLabel, QMainWindow, QMenu,
+    QApplication, QDialog, QDockWidget, QFileDialog, QHBoxLayout, QInputDialog, QLabel, QMainWindow, QMenu,
     QMessageBox, QToolButton, QWidget,
 )
 
@@ -26,6 +26,7 @@ from .mpv_widget import DEFAULT_HWDEC, HWDEC_MODES, MpvWidget
 from ..clips import Clip
 from ..dashcam import find_partner
 from ..tools import find_ffmpeg
+from .. import picture
 from .. import vr as vrfmt
 from ..recorder import StreamRecorder
 from ..media_tools import AudioSettings, build_audio_filter
@@ -33,7 +34,7 @@ from .capture import build_contact_sheet
 from .clips_panel import ClipsPanel
 from .grid import LAYOUTS as GRID_LAYOUTS, GridWindow, video_filter as grid_video_filter
 from .dialogs import (
-    MOUSE_DEFAULTS, SUB_DEFAULTS, AudioDialog, BookmarksDialog, PreferencesDialog, SubtitleStyleDialog,
+    MOUSE_DEFAULTS, SUB_DEFAULTS, AudioDialog, BookmarksDialog, PreferencesDialog, SkipDialog, SubtitleStyleDialog,
     VideoAdjustDialog,
 )
 from .fullscreen import enter_fullscreen, is_fullscreen, leave_fullscreen
@@ -83,6 +84,7 @@ SHORTCUT_HELP = """
 <tr><td><b>Ctrl + L</b></td><td>라이브러리 / 중복 정리</td></tr>
 <tr><td><b>Ctrl + Shift + R</b></td><td>녹화 시작/중지 (스트림 저장)</td></tr>
 <tr><td><b>Ctrl + Shift + M</b></td><td>동영상 합치기 (.ts 조각 등 여러 파일을 하나로)</td></tr>
+<tr><td><b>Shift + D</b></td><td>대사 크게 켜기·끄기</td></tr>
 <tr><td><b>Alt + V</b></td><td>VR / 360° 보기 켜기·끄기 — 끌어서 둘러보기, Ctrl+휠 시야, Alt+←/→ 돌기, Alt+0 정면</td></tr>
 <tr><td><b>Ctrl + G</b></td><td>화면 분할 보기 (CCTV) — 파일 골라 열기, Esc 닫기, Space 전체 일시정지</td></tr>
 </table>
@@ -184,6 +186,9 @@ class MainWindow(QMainWindow):
         self._sub_style = dict(SUB_DEFAULTS)
         self._burst_left = 0
         self._recording: str | None = None   # 녹화 중인 파일 경로
+        self._skip_rules: dict[str, dict] = {}  # 폴더 → {"intro": 초, "outro": 초}
+        self._cur_skip = (0, 0)
+        self._outro_done = False
         self._recorder: StreamRecorder | None = None  # 인터넷 스트림 저장 (ffmpeg)
         self._record_started = 0.0
 
@@ -331,6 +336,9 @@ class MainWindow(QMainWindow):
         # 소리 / 자막
         self.a_audio = A("소리 설정 (이퀄라이저·싱크)…", self.show_audio_dialog)
         self.a_normalize = A("소리 크기 자동 맞춤", self.toggle_normalize, "N", checkable=True)
+        self.a_dialogue = A("대사 크게", self.toggle_dialogue, "Shift+D", checkable=True)
+        self.a_smooth = A("부드러운 움직임 (끊김 줄이기)", lambda: self.toggle_smooth(), checkable=True)
+        self.a_skip = A("오프닝·엔딩 건너뛰기 (이 폴더)…", self.show_skip_dialog)
         self.a_adelay_minus = A("소리 싱크 -0.1초", lambda: self.change_audio_delay(-0.1), "Ctrl+[")
         self.a_adelay_plus = A("소리 싱크 +0.1초", lambda: self.change_audio_delay(0.1), "Ctrl+]")
         self.a_adelay_reset = A("소리 싱크 초기화", lambda: self.change_audio_delay(None), "Ctrl+Backspace")
@@ -364,6 +372,7 @@ class MainWindow(QMainWindow):
         rec.addAction(self.a_record)
         rec.addAction("녹화 폴더 열기", self.open_record_dir)
         rec.addAction("녹화 폴더 바꾸기…", self.choose_record_dir)
+        m.addAction(self.a_skip)
         m.addSeparator()
         m.addActions([self.a_prev, self.a_next])
         m.addSeparator()
@@ -387,7 +396,7 @@ class MainWindow(QMainWindow):
         m.addSeparator()
         self.audio_menu = m.addMenu("오디오 트랙")
         m.addSeparator()
-        m.addActions([self.a_normalize, self.a_audio, self.a_adelay_minus, self.a_adelay_plus, self.a_adelay_reset])
+        m.addActions([self.a_normalize, self.a_dialogue, self.a_audio, self.a_adelay_minus, self.a_adelay_plus, self.a_adelay_reset])
 
         m = mb.addMenu("자막(&S)")
         m.addAction(self.a_sub_load)
@@ -426,6 +435,22 @@ class MainWindow(QMainWindow):
         vr_menu.addActions([self.a_vr_reset, self.a_vr_left, self.a_vr_right, self.a_vr_wider, self.a_vr_narrower])
         vr_menu.addSeparator()
         vr_menu.addAction(self.a_vr_auto)
+        m.addSeparator()
+        q_menu = m.addMenu("화질 개선")
+        self.quality_group = QActionGroup(self)
+        for key, label in picture.QUALITY_PRESETS.items():
+            a = q_menu.addAction(label, lambda k=key: self.set_picture_quality(k))
+            a.setCheckable(True)
+            a.setData(key)
+            self.quality_group.addAction(a)
+        hdr_menu = m.addMenu("HDR 색 보정")
+        self.hdr_group = QActionGroup(self)
+        for key, label in picture.HDR_PRESETS.items():
+            a = hdr_menu.addAction(label, lambda k=key: self.set_hdr_mode(k))
+            a.setCheckable(True)
+            a.setData(key)
+            self.hdr_group.addAction(a)
+        m.addAction(self.a_smooth)
         m.addSeparator()
         hw = m.addMenu("하드웨어 가속")
         self.hwdec_group = QActionGroup(self)
@@ -535,6 +560,11 @@ class MainWindow(QMainWindow):
         self.a_compat.setChecked(s.value("compatMode", False, type=bool))
         self.set_compat_mode(announce=False)
         self.a_pip_auto.setChecked(s.value("pipAuto", False, type=bool))
+        self.set_picture_quality(s.value("pictureQuality", "default"), announce=False)
+        self.set_hdr_mode(s.value("hdrMode", "auto"), announce=False)
+        self.a_smooth.setChecked(s.value("smoothMotion", False, type=bool))
+        self.toggle_smooth(announce=False)
+        self._skip_rules = self._load_json("skipRules")
         self.playlist.set_repeat_mode(s.value("repeat", "none"))
         try:
             self.playlist.restore_state(json.loads(s.value("playlists", "") or "{}"))
@@ -542,7 +572,8 @@ class MainWindow(QMainWindow):
             pass  # 저장된 재생목록이 깨졌으면 빈 목록으로 시작
         self._mouse = {**MOUSE_DEFAULTS, **self._load_json("mouse")}
         a = self._load_json("audio")
-        self._audio = AudioSettings(bool(a.get("normalize", False)), int(a.get("bass", 0)), int(a.get("treble", 0)))
+        self._audio = AudioSettings(bool(a.get("normalize", False)), int(a.get("bass", 0)), int(a.get("treble", 0)),
+                                    bool(a.get("dialogue", False)))
         self.apply_audio(announce=False)
         self._sub_style = {**SUB_DEFAULTS, **self._load_json("subStyle")}
         self.apply_sub_style(self._sub_style)
@@ -574,7 +605,11 @@ class MainWindow(QMainWindow):
         s.setValue("playlists", json.dumps(self.playlist.to_state(), ensure_ascii=False))
         s.setValue("mouse", json.dumps(self._mouse))
         s.setValue("audio", json.dumps({"normalize": self._audio.normalize, "bass": self._audio.bass,
-                                        "treble": self._audio.treble}))
+                                        "treble": self._audio.treble, "dialogue": self._audio.dialogue}))
+        s.setValue("pictureQuality", self.video.quality)
+        s.setValue("hdrMode", self.video.hdr)
+        s.setValue("smoothMotion", self.a_smooth.isChecked())
+        s.setValue("skipRules", json.dumps(self._skip_rules, ensure_ascii=False))
         s.setValue("subStyle", json.dumps(self._sub_style, ensure_ascii=False))
         s.setValue("hwdecMode", self._hwdec)
         s.setValue("compatMode", self.a_compat.isChecked())
@@ -874,6 +909,76 @@ class MainWindow(QMainWindow):
         except SystemError:
             pass
 
+    # ------------------------------------------------------------------ 화질 / 움직임
+    def set_picture_quality(self, key: str, announce: bool = True) -> None:
+        if key not in picture.QUALITY_PRESETS:
+            key = "default"
+        if key == "anime" and self.video.software_rendering:
+            self.osd("그래픽 카드 가속이 없는 환경이라 애니메이션 화질 개선을 쓸 수 없습니다")
+            key = self.video.quality
+        self.video.set_picture(quality=key)
+        for a in self.quality_group.actions():
+            a.setChecked(a.data() == key)
+        if announce:
+            msg = f"화질 개선: {picture.QUALITY_PRESETS[key]}"
+            if key != "default" and self.video.compat_mode:
+                msg += "  (호환 모드가 켜져 있어 적용되지 않습니다)"
+            self.osd(msg)
+
+    def set_hdr_mode(self, key: str, announce: bool = True) -> None:
+        if key not in picture.HDR_PRESETS:
+            key = "auto"
+        self.video.set_picture(hdr=key)
+        for a in self.hdr_group.actions():
+            a.setChecked(a.data() == key)
+        if announce:
+            msg = f"HDR 색 보정: {picture.HDR_PRESETS[key]}"
+            if self._current and not picture.is_hdr(self.player.video_params):
+                msg += "  (지금 영상은 HDR 이 아니어서 차이가 없습니다)"
+            self.osd(msg)
+
+    def toggle_smooth(self, announce: bool = True) -> None:
+        on = self.a_smooth.isChecked()
+        screen = self.screen()
+        hz = screen.refreshRate() if screen is not None else None
+        self.video.set_smooth(on, hz)
+        if announce:
+            self.osd(f"부드러운 움직임 켜짐 (화면 {hz:.0f}Hz 에 맞춤)" if on and hz else
+                     "부드러운 움직임 켜짐" if on else "부드러운 움직임 꺼짐")
+
+    # ------------------------------------------------------------------ 오프닝·엔딩 건너뛰기
+    @staticmethod
+    def _folder_key(path: str) -> str | None:
+        if not path or "://" in path:
+            return None
+        return os.path.normcase(os.path.dirname(os.path.abspath(path)))
+
+    def _skip_rule(self, path: str) -> tuple[int, int]:
+        rule = self._skip_rules.get(self._folder_key(path) or "", {})
+        try:
+            return int(rule.get("intro", 0)), int(rule.get("outro", 0))
+        except (TypeError, ValueError, AttributeError):
+            return 0, 0
+
+    def show_skip_dialog(self) -> None:
+        key = self._folder_key(self._current or "")
+        if key is None:
+            self.osd("내 PC 의 영상을 재생한 뒤에 설정할 수 있습니다")
+            return
+        intro, outro = self._skip_rule(self._current)
+        dlg = SkipDialog(os.path.dirname(os.path.abspath(self._current)), intro, outro,
+                         self._time, self._duration, self)
+        if dlg.exec() != QDialog.Accepted:
+            return
+        intro, outro = dlg.values()
+        if intro or outro:
+            self._skip_rules[key] = {"intro": intro, "outro": outro}
+        else:
+            self._skip_rules.pop(key, None)
+        self._cur_skip = (intro, outro)
+        self.settings.setValue("skipRules", json.dumps(self._skip_rules, ensure_ascii=False))
+        self.osd(f"이 폴더: 오프닝 {intro}초 · 엔딩 {outro}초 건너뛰기" if intro or outro else "이 폴더 건너뛰기 끔")
+
     def _on_vr_changed(self, fmt) -> None:
         self.a_vr.setChecked(fmt is not None)
         for a in self.vr_group.actions():
@@ -1032,6 +1137,12 @@ class MainWindow(QMainWindow):
     def _on_time(self, t: float) -> None:
         self._time = t
         self.controls.set_time(t)
+        outro = self._cur_skip[1]
+        if (outro and not self._outro_done and self._clip_index is None and self._duration > outro + 5
+                and t >= self._duration - outro):
+            self._outro_done = True
+            self.osd("엔딩 건너뜀")
+            QTimer.singleShot(0, self._on_eof)
 
     def _on_duration(self, d: float) -> None:
         self._duration = d
@@ -1042,6 +1153,8 @@ class MainWindow(QMainWindow):
         if not path:
             return
         self.vr.on_file_loaded(path)
+        self._cur_skip = self._skip_rule(path)
+        self._outro_done = False
         if self._clip_index is not None:
             return  # 구간 재생은 이어보기 없이 구간 시작점부터
         self._update_auto_pip()
@@ -1050,9 +1163,13 @@ class MainWindow(QMainWindow):
             return
         pos = self.db.load_position(path)
         dur = self.player.duration or 0
-        if pos and pos >= RESUME_MIN_SECONDS and (not dur or pos < dur * RESUME_END_MARGIN):
+        intro = self._cur_skip[0]
+        if pos and pos >= RESUME_MIN_SECONDS and (not dur or pos < dur * RESUME_END_MARGIN) and pos > intro:
             self.seek(pos, absolute=True)
             self.osd(f"이어보기 {fmt_time(pos)}  (처음부터: Home)")
+        elif intro and (not dur or intro < dur - 5):
+            self.seek(intro, absolute=True)
+            self.osd(f"오프닝 건너뜀 ({fmt_time(intro)}부터)")
 
     def _on_load_failed(self, msg: str) -> None:
         name = os.path.basename(self._current or "") or self._current
@@ -1278,6 +1395,7 @@ class MainWindow(QMainWindow):
     def apply_audio(self, announce: bool = True) -> None:
         self._set_prop("af", build_audio_filter(self._audio))
         self.a_normalize.setChecked(self._audio.normalize)
+        self.a_dialogue.setChecked(self._audio.dialogue)
         if announce:
             self.osd("소리 효과 적용" if not self._audio.is_default() else "소리 효과 끔")
 
@@ -1285,6 +1403,11 @@ class MainWindow(QMainWindow):
         self._audio.normalize = self.a_normalize.isChecked()
         self.apply_audio(announce=False)
         self.osd("소리 크기 자동 맞춤 켜짐" if self._audio.normalize else "소리 크기 자동 맞춤 꺼짐")
+
+    def toggle_dialogue(self) -> None:
+        self._audio.dialogue = self.a_dialogue.isChecked()
+        self.apply_audio(announce=False)
+        self.osd("대사 크게 켜짐" if self._audio.dialogue else "대사 크게 꺼짐")
 
     def show_audio_dialog(self) -> None:
         dlg = AudioDialog(self._audio, float(self.player.audio_delay or 0), self)
