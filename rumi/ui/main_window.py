@@ -26,6 +26,7 @@ from .mpv_widget import DEFAULT_HWDEC, HWDEC_MODES, MpvWidget
 from ..clips import Clip
 from ..dashcam import find_partner
 from ..tools import find_ffmpeg
+from .. import vr as vrfmt
 from ..recorder import StreamRecorder
 from ..media_tools import AudioSettings, build_audio_filter
 from .capture import build_contact_sheet
@@ -39,6 +40,7 @@ from .fullscreen import enter_fullscreen, is_fullscreen, leave_fullscreen
 from .merge_dialog import MergeDialog
 from .hover_reveal import HoverReveal, bottom_zone, top_zone
 from .seek_preview import SeekPreview
+from .vr_view import VrView
 from .watchdog import HangWatchdog
 from .workers import run_with_progress
 from .pip import MAX_PIPS, PipView
@@ -81,6 +83,7 @@ SHORTCUT_HELP = """
 <tr><td><b>Ctrl + L</b></td><td>라이브러리 / 중복 정리</td></tr>
 <tr><td><b>Ctrl + Shift + R</b></td><td>녹화 시작/중지 (스트림 저장)</td></tr>
 <tr><td><b>Ctrl + Shift + M</b></td><td>동영상 합치기 (.ts 조각 등 여러 파일을 하나로)</td></tr>
+<tr><td><b>Alt + V</b></td><td>VR / 360° 보기 켜기·끄기 — 끌어서 둘러보기, Ctrl+휠 시야, Alt+←/→ 돌기, Alt+0 정면</td></tr>
 <tr><td><b>Ctrl + G</b></td><td>화면 분할 보기 (CCTV) — 파일 골라 열기, Esc 닫기, Space 전체 일시정지</td></tr>
 </table>
 """
@@ -306,6 +309,13 @@ class MainWindow(QMainWindow):
         self.a_zoom_in = A("화면 확대", lambda: self.change_zoom(0.1), ["Ctrl+=", "Ctrl++"])
         self.a_zoom_out = A("화면 축소", lambda: self.change_zoom(-0.1), "Ctrl+-")
         self.a_zoom_reset = A("확대 초기화", self.reset_zoom, "Ctrl+0")
+        self.a_vr = A("VR 보기 켜기/끄기", lambda: self.vr.toggle(), "Alt+V", checkable=True)
+        self.a_vr_auto = A("VR 영상 자동으로 알아보기", self._toggle_vr_auto, checkable=True)
+        self.a_vr_reset = A("정면으로 되돌리기", lambda: self.vr.reset_view(), "Alt+0")
+        self.a_vr_wider = A("시야 넓게", lambda: self.vr.change_fov(10), "Alt+-")
+        self.a_vr_narrower = A("시야 좁게 (확대)", lambda: self.vr.change_fov(-10), "Alt+=")
+        self.a_vr_left = A("왼쪽으로 돌기", lambda: self.vr.turn(d_yaw=-15), "Alt+Left")
+        self.a_vr_right = A("오른쪽으로 돌기", lambda: self.vr.turn(d_yaw=15), "Alt+Right")
         self.a_rotate = A("90° 회전", self.rotate, "Ctrl+R")
         self.a_hflip = A("좌우 반전", lambda: self.toggle_flip("hflip", self.a_hflip), checkable=True)
         self.a_vflip = A("상하 반전", lambda: self.toggle_flip("vflip", self.a_vflip), checkable=True)
@@ -403,6 +413,19 @@ class MainWindow(QMainWindow):
         zoom.addActions([self.a_zoom_in, self.a_zoom_out, self.a_zoom_reset])
         rot = m.addMenu("회전 / 반전")
         rot.addActions([self.a_rotate, self.a_hflip, self.a_vflip, self.a_transform_reset])
+        vr_menu = m.addMenu("VR / 360° 보기")
+        vr_menu.addAction(self.a_vr)
+        vr_menu.addSeparator()
+        self.vr_group = QActionGroup(self)
+        for key, label in [(None, "끄기 (원래 모양 그대로)")] + [(k, v[2]) for k, v in vrfmt.FORMATS.items()]:
+            a = vr_menu.addAction(label, lambda k=key: self.vr.set_format(k))
+            a.setCheckable(True)
+            a.setData(key)
+            self.vr_group.addAction(a)
+        vr_menu.addSeparator()
+        vr_menu.addActions([self.a_vr_reset, self.a_vr_left, self.a_vr_right, self.a_vr_wider, self.a_vr_narrower])
+        vr_menu.addSeparator()
+        vr_menu.addAction(self.a_vr_auto)
         m.addSeparator()
         hw = m.addMenu("하드웨어 가속")
         self.hwdec_group = QActionGroup(self)
@@ -459,6 +482,12 @@ class MainWindow(QMainWindow):
         v.middle_clicked.connect(lambda: self._mouse_action("middle_click"))
         v.wheel_scrolled.connect(self._on_wheel)
         v.dragged.connect(self._on_drag)
+        self.vr = VrView(self.player, v, lambda: self._hwdec, self.osd, self)
+        self.vr.auto = self.settings.value("vrAuto", True, type=bool)
+        self.a_vr_auto.setChecked(self.vr.auto)
+        self.vr.changed.connect(self._on_vr_changed)
+        self._on_vr_changed(None)
+        v.resized.connect(self.vr.on_resized)
 
         c.play_pause.connect(self.toggle_pause)
         c.stop.connect(self.stop)
@@ -632,6 +661,7 @@ class MainWindow(QMainWindow):
         self._data_sub_checked = False
         self.controls.reset()
         self.playlist.set_current(path)
+        self.vr.prepare(path)
         self.video.load(path, **({"start": f"{start:.3f}"} if start is not None else {}))
         self.player.pause = False
         self.setWindowTitle(f"{os.path.basename(path) or path} - {APP_NAME}")
@@ -844,6 +874,17 @@ class MainWindow(QMainWindow):
         except SystemError:
             pass
 
+    def _on_vr_changed(self, fmt) -> None:
+        self.a_vr.setChecked(fmt is not None)
+        for a in self.vr_group.actions():
+            a.setChecked(a.data() == fmt)
+        for a in (self.a_vr_reset, self.a_vr_left, self.a_vr_right, self.a_vr_wider, self.a_vr_narrower):
+            a.setEnabled(fmt is not None)
+
+    def _toggle_vr_auto(self) -> None:
+        self.vr.auto = self.a_vr_auto.isChecked()
+        self.settings.setValue("vrAuto", self.vr.auto)
+
     def _set_prop(self, name: str, value) -> None:
         try:
             setattr(self.player, name, value)
@@ -855,6 +896,7 @@ class MainWindow(QMainWindow):
             mode = DEFAULT_HWDEC
         self._hwdec = mode
         self._set_prop("hwdec", mode)
+        self.vr.sync_hwdec()  # VR 보기 중에는 복사 방식으로
         for pip in self._pips:
             pip.player.hwdec = mode
         for a in self.hwdec_group.actions():
@@ -999,6 +1041,7 @@ class MainWindow(QMainWindow):
         path = self._current
         if not path:
             return
+        self.vr.on_file_loaded(path)
         if self._clip_index is not None:
             return  # 구간 재생은 이어보기 없이 구간 시작점부터
         self._update_auto_pip()
@@ -1074,6 +1117,9 @@ class MainWindow(QMainWindow):
 
     def _on_wheel(self, direction: int, ctrl: bool) -> None:
         action = self._mouse.get("ctrl_wheel" if ctrl else "wheel", "none")
+        if action == "zoom" and self.vr.active:
+            self.vr.change_fov(-5 * direction)  # 위로 굴리면 시야를 좁혀 확대
+            return
         if action == "volume":
             self.change_volume(5 * direction)
         elif action == "seek":
@@ -1082,7 +1128,10 @@ class MainWindow(QMainWindow):
             self.change_zoom(0.1 * direction)
 
     def _on_drag(self, dx: float, dy: float) -> None:
-        """확대 중일 때 끌어서 화면 이동."""
+        """VR 보기 중이면 끌어서 둘러보기, 확대 중이면 끌어서 화면 이동."""
+        if self.vr.active:
+            self.vr.rotate_by(dx, dy)
+            return
         if self._zoom <= 0:
             return
         scale = 2 ** self._zoom

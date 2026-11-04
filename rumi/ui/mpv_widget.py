@@ -62,6 +62,7 @@ class MpvWidget(QOpenGLWidget):
     tracks_changed = Signal(list)
     sub_text_changed = Signal(str)
     renderer_ready = Signal()
+    resized = Signal()
 
     mouse_moved = Signal()
     clicked = Signal()
@@ -263,6 +264,10 @@ class MpvWidget(QOpenGLWidget):
             self._render_ctx = None
             self.doneCurrent()
         self.player.terminate()
+
+    def resizeEvent(self, e):
+        super().resizeEvent(e)
+        self.resized.emit()
 
     # ---- 마우스 ----
     def mousePressEvent(self, e):
