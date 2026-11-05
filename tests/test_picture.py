@@ -45,3 +45,27 @@ def test_dialogue_filter_first_and_stereo():
     assert "bass=" in af
     assert not AudioSettings(dialogue=True).is_default()
     assert "dialoguenhance" not in build_audio_filter(AudioSettings())
+
+
+def test_effective_quality_limits_anime4k_to_1080p():
+    assert picture.effective_quality("anime", 1080) == "anime"
+    assert picture.effective_quality("anime", 2160) == "sharp"
+    assert picture.effective_quality("anime", None) == "anime"
+    assert picture.effective_quality("hq", 2160) == "hq"
+
+
+def test_is_overloaded():
+    assert not picture.is_overloaded(0, 60, 20)
+    assert picture.is_overloaded(10, 60, 20)       # 프레임 1/6 을 버림
+    assert not picture.is_overloaded(3, 5, 0)      # 표본이 너무 적음
+    assert picture.is_overloaded(0, 60, 400)       # 화면이 0.4초 멈춤
+
+
+def test_step_down_order_and_end():
+    state, steps = (True, "anime", "dynamic"), []
+    while (r := picture.step_down(*state)) is not None:
+        state, msg = r
+        steps.append(state)
+    assert steps == [(False, "anime", "dynamic"), (False, "hq", "dynamic"),
+                     (False, "default", "dynamic"), (False, "default", "auto")]
+    assert not picture.is_heavy(*state)

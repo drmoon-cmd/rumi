@@ -42,6 +42,10 @@ Windows, macOS, Linux에서 동작합니다 (Python + Qt(PySide6) + libmpv).
 - **오디오 → 대사 크게** (Shift+D): 배경음·효과음은 그대로 두고 사람 목소리를 키움 (소리 설정 창에서도 가능)
 - **재생 → 오프닝·엔딩 건너뛰기 (이 폴더)**: 폴더마다 앞·뒤 몇 초를 정해 두면 자동으로 건너뛰고, 엔딩에서 다음 영상으로 ('지금 위치' 버튼으로 쉽게 지정)
 - Anime4K 셰이더: MIT 라이선스 (`rumi/shaders/anime4k/LICENSE`)
+- **느려짐 막기**: 재생 중 프레임을 제때 못 그리거나 화면이 굳으면(2초씩 두 번 연속) 무거운 것부터 한 단계씩 자동으로 낮추고 알려 줌
+  (부드러운 움직임 → 셰이더 → 고화질 확대 → HDR 장면별 맞춤)
+- 애니메이션 화질 개선은 1080p 이하 영상에만 (더 큰 영상은 '선명하게'로 대신), 부드러운 움직임과 함께 켤 수 없음
+- **화면 → 화질 설정 모두 기본으로** (Alt+Backspace). 지난번에 정상 종료되지 않았으면 무거운 화질 설정을 끈 채로 시작
 
 ### VR / 360° 동영상 보기
 - **화면 → VR / 360° 보기** (Alt+V): 360°·180° VR 동영상을 일반 모니터에서 둘러보며 봅니다
@@ -135,13 +139,13 @@ pytest            # 라이브러리/중복 정리 로직 테스트
 
 | OS | 명령 | 결과 |
 |---|---|---|
-| Windows | `python packaging/build.py` 다음 `iscc packaging\windows\rumi.iss` | `dist/RumiSetup-0.3.9.exe` (시작 메뉴, 파일 연결 선택) |
+| Windows | `python packaging/build.py` 다음 `iscc packaging\windows\rumi.iss` | `dist/RumiSetup-0.3.10.exe` (시작 메뉴, 파일 연결 선택) |
 | macOS | `python packaging/build.py` | `dist/Rumi.app` |
 | Linux | `python packaging/build.py` | `dist/Rumi/Rumi` |
 
 Windows에서는 `libmpv-2.dll`을 `packaging/windows/` 아래 아무 곳에 두거나, `RUMI_LIBMPV` 환경 변수로 경로를 지정하세요.
 
-각 OS에서 직접 빌드하지 않아도 됩니다. GitHub의 **Actions → build → Run workflow**를 실행하면(또는 `v0.3.9` 같은 태그를 푸시하면) 세 OS용 설치 파일이 한 번에 만들어집니다.
+각 OS에서 직접 빌드하지 않아도 됩니다. GitHub의 **Actions → build → Run workflow**를 실행하면(또는 `v0.3.10` 같은 태그를 푸시하면) 세 OS용 설치 파일이 한 번에 만들어집니다.
 
 ## 데이터 위치
 

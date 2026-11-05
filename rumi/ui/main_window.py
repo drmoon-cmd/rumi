@@ -41,6 +41,7 @@ from .fullscreen import enter_fullscreen, is_fullscreen, leave_fullscreen
 from .merge_dialog import MergeDialog
 from .hover_reveal import HoverReveal, bottom_zone, top_zone
 from .seek_preview import SeekPreview
+from .load_guard import LoadGuard
 from .vr_view import VrView
 from .watchdog import HangWatchdog
 from .workers import run_with_progress
@@ -84,6 +85,7 @@ SHORTCUT_HELP = """
 <tr><td><b>Ctrl + L</b></td><td>라이브러리 / 중복 정리</td></tr>
 <tr><td><b>Ctrl + Shift + R</b></td><td>녹화 시작/중지 (스트림 저장)</td></tr>
 <tr><td><b>Ctrl + Shift + M</b></td><td>동영상 합치기 (.ts 조각 등 여러 파일을 하나로)</td></tr>
+<tr><td><b>Alt + Backspace</b></td><td>화질 설정 모두 기본으로 (느려졌을 때)</td></tr>
 <tr><td><b>Shift + D</b></td><td>대사 크게 켜기·끄기</td></tr>
 <tr><td><b>Alt + V</b></td><td>VR / 360° 보기 켜기·끄기 — 끌어서 둘러보기, Ctrl+휠 시야, Alt+←/→ 돌기, Alt+0 정면</td></tr>
 <tr><td><b>Ctrl + G</b></td><td>화면 분할 보기 (CCTV) — 파일 골라 열기, Esc 닫기, Space 전체 일시정지</td></tr>
@@ -186,6 +188,7 @@ class MainWindow(QMainWindow):
         self._sub_style = dict(SUB_DEFAULTS)
         self._burst_left = 0
         self._recording: str | None = None   # 녹화 중인 파일 경로
+        self._quality_pref = "default"  # 고른 화질 개선 (영상에 따라 더 가벼운 것을 쓸 수 있음)
         self._skip_rules: dict[str, dict] = {}  # 폴더 → {"intro": 초, "outro": 초}
         self._cur_skip = (0, 0)
         self._outro_done = False
@@ -339,6 +342,7 @@ class MainWindow(QMainWindow):
         self.a_dialogue = A("대사 크게", self.toggle_dialogue, "Shift+D", checkable=True)
         self.a_smooth = A("부드러운 움직임 (끊김 줄이기)", lambda: self.toggle_smooth(), checkable=True)
         self.a_skip = A("오프닝·엔딩 건너뛰기 (이 폴더)…", self.show_skip_dialog)
+        self.a_picture_reset = A("화질 설정 모두 기본으로 (느려졌을 때)", lambda: self.reset_picture(), "Alt+Backspace")
         self.a_adelay_minus = A("소리 싱크 -0.1초", lambda: self.change_audio_delay(-0.1), "Ctrl+[")
         self.a_adelay_plus = A("소리 싱크 +0.1초", lambda: self.change_audio_delay(0.1), "Ctrl+]")
         self.a_adelay_reset = A("소리 싱크 초기화", lambda: self.change_audio_delay(None), "Ctrl+Backspace")
@@ -451,6 +455,7 @@ class MainWindow(QMainWindow):
             a.setData(key)
             self.hdr_group.addAction(a)
         m.addAction(self.a_smooth)
+        m.addAction(self.a_picture_reset)
         m.addSeparator()
         hw = m.addMenu("하드웨어 가속")
         self.hwdec_group = QActionGroup(self)
@@ -513,6 +518,9 @@ class MainWindow(QMainWindow):
         self.vr.changed.connect(self._on_vr_changed)
         self._on_vr_changed(None)
         v.resized.connect(self.vr.on_resized)
+        self.load_guard = LoadGuard(self.player, lambda: picture.is_heavy(
+            self.a_smooth.isChecked(), self.video.quality, self.video.hdr) and not self.video.compat_mode, self)
+        self.load_guard.overloaded.connect(self._on_overloaded)
 
         c.play_pause.connect(self.toggle_pause)
         c.stop.connect(self.stop)
@@ -560,10 +568,24 @@ class MainWindow(QMainWindow):
         self.a_compat.setChecked(s.value("compatMode", False, type=bool))
         self.set_compat_mode(announce=False)
         self.a_pip_auto.setChecked(s.value("pipAuto", False, type=bool))
-        self.set_picture_quality(s.value("pictureQuality", "default"), announce=False)
-        self.set_hdr_mode(s.value("hdrMode", "auto"), announce=False)
-        self.a_smooth.setChecked(s.value("smoothMotion", False, type=bool))
-        self.toggle_smooth(announce=False)
+        # 지난번에 정상적으로 끝나지 않았으면(멈춰서 강제로 끈 경우 등) 무거운 화질 설정 없이 시작한다
+        crashed = s.value("running", False, type=bool)
+        heavy = picture.is_heavy(s.value("smoothMotion", False, type=bool),
+                                 s.value("pictureQuality", "default"), s.value("hdrMode", "auto"))
+        self._safe_started = crashed and heavy
+        if not self._safe_started:
+            self.set_picture_quality(s.value("pictureQuality", "default"), announce=False)
+            self.set_hdr_mode(s.value("hdrMode", "auto"), announce=False)
+            self.a_smooth.setChecked(s.value("smoothMotion", False, type=bool))
+            self.toggle_smooth(announce=False)
+        else:
+            QTimer.singleShot(800, lambda: QMessageBox.information(
+                self, APP_NAME, "지난번에 Rumi 가 정상적으로 끝나지 않았습니다.\n\n"
+                "PC 가 느려지는 것을 막기 위해 화질 개선·부드러운 움직임·HDR 보정을 끈 채로 시작했습니다. "
+                "화면 메뉴에서 다시 켤 수 있습니다."))
+        s.setValue("running", True)
+        s.sync()
+        self.load_guard.start()
         self._skip_rules = self._load_json("skipRules")
         self.playlist.set_repeat_mode(s.value("repeat", "none"))
         try:
@@ -594,6 +616,7 @@ class MainWindow(QMainWindow):
         self._save_timer.stop()
         self._reveal.stop()
         self._watchdog.stop()
+        self.load_guard.stop()
         self.stop_record(report=False)
         if is_fullscreen(self):
             self.toggle_fullscreen()
@@ -606,9 +629,10 @@ class MainWindow(QMainWindow):
         s.setValue("mouse", json.dumps(self._mouse))
         s.setValue("audio", json.dumps({"normalize": self._audio.normalize, "bass": self._audio.bass,
                                         "treble": self._audio.treble, "dialogue": self._audio.dialogue}))
-        s.setValue("pictureQuality", self.video.quality)
+        s.setValue("pictureQuality", self._quality_pref)
         s.setValue("hdrMode", self.video.hdr)
         s.setValue("smoothMotion", self.a_smooth.isChecked())
+        s.setValue("running", False)  # 정상 종료 표시
         s.setValue("skipRules", json.dumps(self._skip_rules, ensure_ascii=False))
         s.setValue("subStyle", json.dumps(self._sub_style, ensure_ascii=False))
         s.setValue("hwdecMode", self._hwdec)
@@ -915,20 +939,47 @@ class MainWindow(QMainWindow):
             key = "default"
         if key == "anime" and self.video.software_rendering:
             self.osd("그래픽 카드 가속이 없는 환경이라 애니메이션 화질 개선을 쓸 수 없습니다")
-            key = self.video.quality
-        self.video.set_picture(quality=key)
+            key = self._quality_pref
+        extra = ""
+        if key == "anime" and self.a_smooth.isChecked():
+            # 가장 무거운 두 가지를 함께 켜면 그래픽 카드가 꽉 차 PC 전체가 느려진다
+            self.a_smooth.setChecked(False)
+            self.toggle_smooth(announce=False)
+            extra = "  · 부드러운 움직임은 함께 쓸 수 없어 껐습니다"
+        self._quality_pref = key
         for a in self.quality_group.actions():
             a.setChecked(a.data() == key)
+        applied = self._apply_quality()
         if announce:
             msg = f"화질 개선: {picture.QUALITY_PRESETS[key]}"
             if key != "default" and self.video.compat_mode:
                 msg += "  (호환 모드가 켜져 있어 적용되지 않습니다)"
-            self.osd(msg)
+            elif applied != key:
+                msg += f"  (이 영상은 커서 '{picture.QUALITY_PRESETS[applied]}'(으)로 적용)"
+            self.osd(msg + extra)
+
+    def _video_height(self) -> int | None:
+        try:
+            for t in self.player.track_list or []:
+                if t.get("type") == "video" and t.get("selected"):
+                    return int(t.get("demux-h") or 0) or None
+        except Exception:
+            pass
+        return None
+
+    def _apply_quality(self) -> str:
+        """고른 화질 개선을 지금 영상에 맞게 적용한다 (큰 영상에는 Anime4K 대신 가벼운 것). 적용한 것을 돌려준다."""
+        applied = picture.effective_quality(self._quality_pref, self._video_height() if self._current else None)
+        if applied != self.video.quality:
+            self.video.set_picture(quality=applied)
+            self.load_guard.reset()
+        return applied
 
     def set_hdr_mode(self, key: str, announce: bool = True) -> None:
         if key not in picture.HDR_PRESETS:
             key = "auto"
         self.video.set_picture(hdr=key)
+        self.load_guard.reset()
         for a in self.hdr_group.actions():
             a.setChecked(a.data() == key)
         if announce:
@@ -939,12 +990,45 @@ class MainWindow(QMainWindow):
 
     def toggle_smooth(self, announce: bool = True) -> None:
         on = self.a_smooth.isChecked()
+        extra = ""
+        if on and self._quality_pref == "anime":
+            self._quality_pref = "hq"
+            for a in self.quality_group.actions():
+                a.setChecked(a.data() == "hq")
+            self._apply_quality()
+            extra = f"  · 애니메이션 화질 개선은 함께 쓸 수 없어 '{picture.QUALITY_PRESETS['hq']}'(으)로 바꿨습니다"
         screen = self.screen()
         hz = screen.refreshRate() if screen is not None else None
         self.video.set_smooth(on, hz)
+        self.load_guard.reset()
         if announce:
-            self.osd(f"부드러운 움직임 켜짐 (화면 {hz:.0f}Hz 에 맞춤)" if on and hz else
-                     "부드러운 움직임 켜짐" if on else "부드러운 움직임 꺼짐")
+            self.osd((f"부드러운 움직임 켜짐 (화면 {hz:.0f}Hz 에 맞춤)" if on and hz else
+                      "부드러운 움직임 켜짐" if on else "부드러운 움직임 꺼짐") + extra)
+
+    def reset_picture(self, announce: bool = True) -> None:
+        """화질 관련 설정을 모두 기본으로 (느려졌을 때)."""
+        self.a_smooth.setChecked(False)
+        self.toggle_smooth(announce=False)
+        self.set_picture_quality("default", announce=False)
+        self.set_hdr_mode("auto", announce=False)
+        if announce:
+            self.osd("화질 설정을 모두 기본으로 되돌렸습니다")
+
+    def _on_overloaded(self, reason: str) -> None:
+        step = picture.step_down(self.a_smooth.isChecked(), self._quality_pref, self.video.hdr)
+        if step is None:
+            return
+        (smooth, quality, hdr), msg = step
+        if smooth != self.a_smooth.isChecked():
+            self.a_smooth.setChecked(smooth)
+            self.toggle_smooth(announce=False)
+        if quality != self._quality_pref:
+            self.set_picture_quality(quality, announce=False)
+        if hdr != self.video.hdr:
+            self.set_hdr_mode(hdr, announce=False)
+        text = f"PC 가 버거워해서 {msg} ({reason}). 화면 메뉴에서 다시 켤 수 있습니다"
+        self.osd(text)
+        self.statusBar().showMessage(text, 15000)
 
     # ------------------------------------------------------------------ 오프닝·엔딩 건너뛰기
     @staticmethod
@@ -1153,6 +1237,11 @@ class MainWindow(QMainWindow):
         if not path:
             return
         self.vr.on_file_loaded(path)
+        self.load_guard.reset()
+        applied = self._apply_quality()
+        if applied != self._quality_pref and not self.video.compat_mode:
+            self.statusBar().showMessage(
+                f"큰 영상이라 화질 개선을 '{picture.QUALITY_PRESETS[applied]}'(으)로 가볍게 적용합니다", 8000)
         self._cur_skip = self._skip_rule(path)
         self._outro_done = False
         if self._clip_index is not None:

@@ -78,3 +78,41 @@ def smooth_options(on: bool, refresh_hz: float | None = None) -> dict:
 def is_hdr(video_params: dict | None) -> bool:
     """영상이 HDR(PQ/HLG)인지."""
     return bool(video_params) and str(video_params.get("gamma", "")).lower() in ("pq", "hlg")
+
+
+# ---- 과부하 막기 ----
+ANIME4K_MAX_HEIGHT = 1080   # 이보다 큰 영상은 Anime4K 가 너무 무거워 '선명하게'로 대신한다
+DROP_RATIO_LIMIT = 0.10     # 2초 동안 보여야 할 프레임 중 버린 비율이 이보다 크면 버거운 것
+LAG_LIMIT_MS = 250          # 화면(조작)이 이만큼 넘게 멈추면 버거운 것
+
+
+def effective_quality(preferred: str, video_height: int | None) -> str:
+    """고른 화질 개선을 이 영상에 그대로 쓸지 (큰 영상에 Anime4K 는 너무 무겁다)."""
+    if preferred == "anime" and video_height and video_height > ANIME4K_MAX_HEIGHT:
+        return "sharp"
+    return preferred
+
+
+def is_overloaded(dropped: int, frames: int, lag_ms: float) -> bool:
+    if lag_ms > LAG_LIMIT_MS:
+        return True
+    return frames >= 10 and dropped / frames > DROP_RATIO_LIMIT
+
+
+def is_heavy(smooth: bool, quality: str, hdr: str) -> bool:
+    return smooth or quality != "default" or hdr != "auto"
+
+
+def step_down(smooth: bool, quality: str, hdr: str) -> tuple[tuple[bool, str, str], str] | None:
+    """PC 가 버거울 때 한 단계 가볍게: (새 설정, 안내 문구). 더 내릴 것이 없으면 None.
+
+    가장 부담이 큰 것부터: 부드러운 움직임(화면 주사율만큼 매번 다시 그림) → 셰이더 → 고화질 확대 → HDR 측정."""
+    if smooth:
+        return (False, quality, hdr), "부드러운 움직임을 껐습니다"
+    if quality in ("anime", "sharp"):
+        return (False, "hq", hdr), f"화질 개선을 '{QUALITY_PRESETS['hq']}'(으)로 낮췄습니다"
+    if quality == "hq":
+        return (False, "default", hdr), "화질 개선을 껐습니다"
+    if hdr != "auto":
+        return (False, quality, "auto"), "HDR 장면별 밝기 맞춤을 껐습니다"
+    return None
