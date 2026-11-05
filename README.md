@@ -45,6 +45,7 @@ Windows, macOS, Linux에서 동작합니다 (Python + Qt(PySide6) + libmpv).
 - **느려짐 막기**: 재생 중 프레임을 제때 못 그리거나 화면이 굳으면(2초씩 두 번 연속) 무거운 것부터 한 단계씩 자동으로 낮추고 알려 줌
   (부드러운 움직임 → 셰이더 → 고화질 확대 → HDR 장면별 맞춤)
 - 애니메이션 화질 개선은 1080p 이하 영상에만 (더 큰 영상은 '선명하게'로 대신), 부드러운 움직임과 함께 켤 수 없음
+- CPU 가 영상을 제때 풀지 못하면(하드웨어 가속 꺼짐) 하드웨어 가속을 켜라고 알려 줌
 - **화면 → 화질 설정 모두 기본으로** (Alt+Backspace). 지난번에 정상 종료되지 않았으면 무거운 화질 설정을 끈 채로 시작
 
 ### VR / 360° 동영상 보기
@@ -52,7 +53,7 @@ Windows, macOS, Linux에서 동작합니다 (Python + Qt(PySide6) + libmpv).
 - 파일 이름에 `360`, `180`, `VR180`, `TB`, `SBS`, `LR` 같은 표시가 있으면 열 때 자동으로 켜짐 (메뉴에서 자동 끄기 가능)
 - 형식: 360°, 360° 3D(위아래·좌우), 180° / VR180(좌우·위아래). 3D 영상은 한쪽 눈 화면으로 보여 줌
 - 영상 위를 **끌어서 둘러보기**, **Ctrl+휠** 시야 넓히기·좁히기, Alt+←/→ 15° 돌기, Alt+0 정면으로
-- 하드웨어 가속을 켜 두었으면 VR 보기 중에는 자동으로 '복사 방식'으로 바뀜 (필터를 쓰기 위해)
+- 펼치기는 그래픽 카드에서 하므로 끌어서 둘러봐도 CPU 를 거의 쓰지 않음 (5.7K·8K VR 은 하드웨어 가속을 켜는 것을 권장)
 
 ### 동영상 합치기
 - **파일 → 동영상 합치기** (Ctrl+Shift+M): 나뉘어 저장된 .ts 조각 등 여러 파일을 다시 인코딩 없이 하나로 (mp4·mkv·ts)
@@ -139,13 +140,13 @@ pytest            # 라이브러리/중복 정리 로직 테스트
 
 | OS | 명령 | 결과 |
 |---|---|---|
-| Windows | `python packaging/build.py` 다음 `iscc packaging\windows\rumi.iss` | `dist/RumiSetup-0.3.10.exe` (시작 메뉴, 파일 연결 선택) |
+| Windows | `python packaging/build.py` 다음 `iscc packaging\windows\rumi.iss` | `dist/RumiSetup-0.3.11.exe` (시작 메뉴, 파일 연결 선택) |
 | macOS | `python packaging/build.py` | `dist/Rumi.app` |
 | Linux | `python packaging/build.py` | `dist/Rumi/Rumi` |
 
 Windows에서는 `libmpv-2.dll`을 `packaging/windows/` 아래 아무 곳에 두거나, `RUMI_LIBMPV` 환경 변수로 경로를 지정하세요.
 
-각 OS에서 직접 빌드하지 않아도 됩니다. GitHub의 **Actions → build → Run workflow**를 실행하면(또는 `v0.3.10` 같은 태그를 푸시하면) 세 OS용 설치 파일이 한 번에 만들어집니다.
+각 OS에서 직접 빌드하지 않아도 됩니다. GitHub의 **Actions → build → Run workflow**를 실행하면(또는 `v0.3.11` 같은 태그를 푸시하면) 세 OS용 설치 파일이 한 번에 만들어집니다.
 
 ## 데이터 위치
 

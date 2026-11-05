@@ -1,6 +1,8 @@
 import pytest
 
-from rumi.vr import FORMATS, build_filter, clamp_view, detect_format, out_size, v_fov, view_commands
+import math
+
+from rumi.vr import FORMATS, clamp_view, detect_format, v_fov, view_params
 
 
 @pytest.mark.parametrize("name,w,h,expected", [
@@ -28,23 +30,17 @@ def test_clamp_view_wraps_yaw_and_limits_pitch_fov():
     assert clamp_view(-190, -120, 1) == (170, -90, 30)
 
 
-def test_out_size_keeps_aspect_under_cap_and_even():
-    assert out_size(3840, 2160) == (1920, 1080)
-    w, h = out_size(1001, 563)
-    assert (w % 2, h % 2) == (0, 0) and w <= 1001
-
-
 def test_v_fov_matches_aspect():
     assert v_fov(90, 1000, 1000) == pytest.approx(90)
     assert v_fov(100, 1920, 1080) < 100
 
 
-def test_build_filter_and_commands():
-    f = build_filter("360_tb", 1280, 720, yaw=30, pitch=-10, fov=90)
-    assert f.startswith("@rumivr:lavfi=[v360=")
-    assert "input=e" in f and "in_stereo=tb" in f and "out_stereo=2d" in f and "w=1280" in f
-    assert "yaw=30.00" in f and "pitch=-10.00" in f
-    assert "input=hequirect" in build_filter("180_sbs", 640, 360)
-    names = [n for n, _ in view_commands(0, 0, 100, 1280, 720)]
-    assert names == ["yaw", "pitch", "h_fov", "v_fov"]
+def test_view_params_for_renderer():
+    v = view_params("360_tb", yaw=30, pitch=-10, fov=90)
+    assert v["yaw"] == pytest.approx(math.radians(30)) and v["pitch"] == pytest.approx(math.radians(-10))
+    assert v["tan_half"] == pytest.approx(1.0)            # tan(45°)
+    assert v["span"] == pytest.approx(2 * math.pi) and v["stereo"] == 1
+    v180 = view_params("180_sbs")
+    assert v180["span"] == pytest.approx(math.pi) and v180["stereo"] == 2
+    assert view_params("360", fov=999)["tan_half"] == pytest.approx(math.tan(math.radians(75)))  # 시야 상한 150°
     assert set(FORMATS) >= {"360", "360_tb", "360_sbs", "180", "180_sbs"}

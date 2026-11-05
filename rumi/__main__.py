@@ -56,7 +56,14 @@ def main() -> int:
     files = [a for a in sys.argv[1:] if not a.startswith("-")]
     win = MainWindow(files)
     win.show()
-    return app.exec()
+    code = app.exec()
+    # 창을 닫은 뒤에는 남은 것을 기다리지 않고 곧바로 끝낸다. 재생 엔진이나 외부 도구가 어떤 이유로
+    # 멈춰 있어도 프로그램이 뒤에 남아 CPU·그래픽 카드를 계속 쓰는 일이 없게 한다.
+    from PySide6.QtCore import QSettings
+    QSettings().sync()
+    sys.stdout.flush()
+    sys.stderr.flush()
+    os._exit(code)
 
 
 if __name__ == "__main__":

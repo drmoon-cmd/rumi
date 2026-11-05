@@ -9,7 +9,7 @@ import re
 import time
 from pathlib import Path
 
-from PySide6.QtCore import QPoint, QSettings, QStandardPaths, Qt, QTimer, QUrl, qVersion
+from PySide6.QtCore import QCoreApplication, QEvent, QPoint, QSettings, QStandardPaths, Qt, QTimer, QUrl, qVersion
 from PySide6.QtGui import QAction, QActionGroup, QDesktopServices, QKeySequence
 from PySide6.QtWidgets import (
     QApplication, QDialog, QDockWidget, QFileDialog, QHBoxLayout, QInputDialog, QLabel, QMainWindow, QMenu,
@@ -132,9 +132,23 @@ class VideoArea(QWidget):
         video.setParent(self)
         controls.setParent(self)
         self.topbar = TopBar(self)
+        self.message = QLabel(self)
+        self.message.setStyleSheet("background: rgba(0, 0, 0, 170); color: white; padding: 6px 10px;"
+                                   "border-radius: 4px; font-size: 15px;")
+        self.message.hide()
+        self._message_timer = QTimer(self, singleShot=True, interval=1800)
+        self._message_timer.timeout.connect(self.message.hide)
         self.overlay = False
         self.setObjectName("videoArea")
         self.setStyleSheet("#videoArea { background: black; }")
+
+    def show_message(self, text: str) -> None:
+        self.message.setText(text)
+        self.message.adjustSize()
+        self.message.move(16, 16)
+        self.message.show()
+        self.message.raise_()
+        self._message_timer.start()
 
     def set_overlay(self, on: bool) -> None:
         self.overlay = on
@@ -512,14 +526,15 @@ class MainWindow(QMainWindow):
         v.middle_clicked.connect(lambda: self._mouse_action("middle_click"))
         v.wheel_scrolled.connect(self._on_wheel)
         v.dragged.connect(self._on_drag)
-        self.vr = VrView(self.player, v, lambda: self._hwdec, self.osd, self)
+        self.vr = VrView(self.player, v, self.osd, self)
         self.vr.auto = self.settings.value("vrAuto", True, type=bool)
         self.a_vr_auto.setChecked(self.vr.auto)
         self.vr.changed.connect(self._on_vr_changed)
         self._on_vr_changed(None)
         v.resized.connect(self.vr.on_resized)
-        self.load_guard = LoadGuard(self.player, lambda: picture.is_heavy(
-            self.a_smooth.isChecked(), self.video.quality, self.video.hdr) and not self.video.compat_mode, self)
+        self.load_guard = LoadGuard(self.player, lambda: self._hwdec == "no" or (picture.is_heavy(
+            self.a_smooth.isChecked(), self.video.quality, self.video.hdr) and not self.video.compat_mode), self)
+        self._hwdec_hint_shown = False
         self.load_guard.overloaded.connect(self._on_overloaded)
 
         c.play_pause.connect(self.toggle_pause)
@@ -622,6 +637,7 @@ class MainWindow(QMainWindow):
             self.toggle_fullscreen()
         s = self.settings
         s.setValue("geometry", self.saveGeometry())
+        self.hide()  # 위치를 저장한 뒤, 정리하는 동안 창이 굳어 보이지 않게 먼저 숨긴다
         s.setValue("windowState", self.saveState())
         s.setValue("volume", self.player.volume)
         s.setValue("repeat", self.playlist.repeat_mode().value)
@@ -645,9 +661,12 @@ class MainWindow(QMainWindow):
         for pip in list(self._pips):
             pip.close_pip()
         self._sync_timer.stop()
-        self.video.shutdown()
-        self.db.close()
+        # 재생 엔진을 끄는 동안이나 끈 뒤에 도착하는 알림(파일 끝 등)이 꺼진 엔진을 건드리지 않게
+        self.video.blockSignals(True)
         self._closed = True
+        self.video.shutdown()
+        QCoreApplication.removePostedEvents(self, QEvent.MetaCall)
+        self.db.close()
         super().closeEvent(e)
 
     # ------------------------------------------------------------------ 열기
@@ -720,7 +739,6 @@ class MainWindow(QMainWindow):
         self._data_sub_checked = False
         self.controls.reset()
         self.playlist.set_current(path)
-        self.vr.prepare(path)
         self.video.load(path, **({"start": f"{start:.3f}"} if start is not None else {}))
         self.player.pause = False
         self.setWindowTitle(f"{os.path.basename(path) or path} - {APP_NAME}")
@@ -928,6 +946,11 @@ class MainWindow(QMainWindow):
             self.osd("스크린샷을 바탕화면에 저장했습니다")
 
     def osd(self, text: str) -> None:
+        if self._closed:
+            return
+        if getattr(self, "vr", None) is not None and self.vr.active:
+            self.area.show_message(text)  # VR 보기 중 mpv 글자는 펼친 화면과 함께 휘어진다
+            return
         try:
             self.player.show_text(text, 1500)
         except SystemError:
@@ -1014,7 +1037,16 @@ class MainWindow(QMainWindow):
         if announce:
             self.osd("화질 설정을 모두 기본으로 되돌렸습니다")
 
-    def _on_overloaded(self, reason: str) -> None:
+    def _on_overloaded(self, reason: str, kind: str = "render") -> None:
+        if kind == "decode":
+            # 그래픽 설정을 낮춰도 소용없다: CPU 가 영상을 푸는 것 자체가 버겁다
+            if self._hwdec == "no" and not self._hwdec_hint_shown:
+                self._hwdec_hint_shown = True
+                text = (f"CPU 가 영상을 제때 풀지 못합니다 ({reason}). "
+                        "화면 → 하드웨어 가속 → '켜기 - 복사 방식'을 켜면 그래픽 카드가 대신 풀어 훨씬 가벼워집니다")
+                self.osd(text)
+                self.statusBar().showMessage(text, 20000)
+            return
         step = picture.step_down(self.a_smooth.isChecked(), self._quality_pref, self.video.hdr)
         if step is None:
             return
@@ -1064,6 +1096,8 @@ class MainWindow(QMainWindow):
         self.osd(f"이 폴더: 오프닝 {intro}초 · 엔딩 {outro}초 건너뛰기" if intro or outro else "이 폴더 건너뛰기 끔")
 
     def _on_vr_changed(self, fmt) -> None:
+        if fmt is None:
+            self.area.message.hide()
         self.a_vr.setChecked(fmt is not None)
         for a in self.vr_group.actions():
             a.setChecked(a.data() == fmt)
@@ -1085,7 +1119,6 @@ class MainWindow(QMainWindow):
             mode = DEFAULT_HWDEC
         self._hwdec = mode
         self._set_prop("hwdec", mode)
-        self.vr.sync_hwdec()  # VR 보기 중에는 복사 방식으로
         for pip in self._pips:
             pip.player.hwdec = mode
         for a in self.hwdec_group.actions():

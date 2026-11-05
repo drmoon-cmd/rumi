@@ -8,6 +8,7 @@ from __future__ import annotations
 
 import locale
 import os
+import threading
 import time
 from collections import deque
 
@@ -34,6 +35,7 @@ HWDEC_MODES = {
     "auto-safe": "켜기 - 빠름 (일부 PC에서 화면 깨짐)",
 }
 DEFAULT_HWDEC = "no"
+SHUTDOWN_WAIT_S = 3
 
 # 호환 모드('fast' 프로필)·화질 개선·HDR 보정이 바꾸는 렌더링 옵션. 끌 때 원래 값으로 되돌린다.
 COMPAT_OPTIONS = picture.TOUCHED_OPTIONS
@@ -63,6 +65,7 @@ class MpvWidget(QOpenGLWidget):
     tracks_changed = Signal(list)
     sub_text_changed = Signal(str)
     renderer_ready = Signal()
+    _video_size = Signal(int, int)
     resized = Signal()
 
     mouse_moved = Signal()
@@ -103,6 +106,9 @@ class MpvWidget(QOpenGLWidget):
         self.gl_renderer = ""
         self.compat_mode = False
         self.quality = "default"
+        self.vr_view: dict | None = None   # VR 보기 중이면 보는 방향·시야
+        self._vr_renderer = None
+        self.video_size = (0, 0)
         self.hdr = "auto"
         self._quality_defaults = {}
         for name in COMPAT_OPTIONS:
@@ -120,6 +126,7 @@ class MpvWidget(QOpenGLWidget):
         self._observing = False
         self.idle = True
         self.idle_changed.connect(self._on_idle)
+        self._video_size.connect(self._on_video_size)
 
     def _on_log(self, level: str, component: str, message: str) -> None:
         # mpv 스레드에서 호출됨. 진단용으로 최근 경고/오류만 보관
@@ -163,6 +170,8 @@ class MpvWidget(QOpenGLWidget):
             "track-list": lambda v: self.tracks_changed.emit(list(v or [])),
             "sub-text": lambda v: self.sub_text_changed.emit(str(v or "")),
             "idle-active": lambda v: self.idle_changed.emit(bool(v)),
+            "video-params": lambda v: v and self._video_size.emit(int(v.get("dw") or v.get("w") or 0),
+                                                                  int(v.get("dh") or v.get("h") or 0)),
         }
         for prop, fn in bind.items():
             p.observe_property(prop, lambda _name, value, fn=fn: fn(value))
@@ -200,6 +209,16 @@ class MpvWidget(QOpenGLWidget):
         if self._pending_load is not None:
             QTimer.singleShot(0, self._flush_pending_load)
 
+    def _paint_vr(self, ratio: float) -> None:
+        from .vr_renderer import VrRenderer
+        if self._vr_renderer is None:
+            self._vr_renderer = VrRenderer(self.context().functions())
+            if self._vr_renderer.error:
+                self.log_lines.append(f"VR 셰이더 오류: {self._vr_renderer.error}")
+        self._vr_renderer.render(self._render_ctx, self.defaultFramebufferObject(),
+                                 int(self.width() * ratio), int(self.height() * ratio),
+                                 self.video_size, self.vr_view)
+
     def _flush_pending_load(self) -> None:
         if self._pending_load is not None and self._render_ctx is not None:
             path, options = self._pending_load
@@ -207,6 +226,12 @@ class MpvWidget(QOpenGLWidget):
             self.player.loadfile(path, **options)
 
     def _free_render_ctx(self) -> None:
+        if self._vr_renderer is not None:
+            try:
+                self._vr_renderer.free()
+            except Exception:
+                pass
+            self._vr_renderer = None
         if self._render_ctx is not None:
             try:
                 self._render_ctx.free()
@@ -220,6 +245,9 @@ class MpvWidget(QOpenGLWidget):
         self._free_render_ctx()
         self.doneCurrent()
 
+    def _on_video_size(self, w: int, h: int) -> None:
+        self.video_size = (w, h)
+
     def _on_idle(self, idle: bool) -> None:
         self.idle = idle
         self.update()  # 정지하면 마지막 장면을 지우고 검은 화면으로
@@ -231,6 +259,9 @@ class MpvWidget(QOpenGLWidget):
             f.glClear(GL_COLOR_BUFFER_BIT)
             return
         ratio = self.devicePixelRatioF()
+        if self.vr_view is not None and self.video_size[0] > 0:
+            self._paint_vr(ratio)
+            return
         self._render_ctx.render(
             flip_y=True,
             opengl_fbo={
@@ -269,12 +300,17 @@ class MpvWidget(QOpenGLWidget):
         if not self.compat_mode:
             for name, value in picture.quality_options(self.quality).items():
                 self._set_option(name, value)
-            shaders = [f for f in picture.shader_paths(self.quality) if os.path.exists(f)]
+            shaders += [f for f in picture.shader_paths(self.quality) if os.path.exists(f)]
         for name, value in picture.hdr_options(self.hdr).items():
             self._set_option(name, value)
         if self.compat_mode:
             p.command("apply-profile", "fast")
         self._set_option("glsl-shaders", shaders)
+
+    def set_vr(self, view: dict | None) -> None:
+        """VR 펼치기 켜기(보는 방향 값)/끄기(None). 값만 바꾸는 것은 비용이 거의 없다."""
+        self.vr_view = view
+        self.update()
 
     def set_smooth(self, on: bool, refresh_hz: float | None = None) -> None:
         for name, value in picture.smooth_options(on, refresh_hz).items():
@@ -294,14 +330,28 @@ class MpvWidget(QOpenGLWidget):
             except Exception:
                 pass
 
-    def shutdown(self) -> None:
-        """창을 닫기 전에 호출. 렌더 컨텍스트는 GL 컨텍스트가 활성일 때 해제해야 한다."""
-        if self._render_ctx is not None:
+    def shutdown(self, wait: bool = True) -> threading.Thread:
+        """창을 닫기 전에 호출. 렌더 컨텍스트는 GL 컨텍스트가 활성일 때 해제해야 한다.
+
+        재생 엔진 종료(terminate)가 어떤 이유로든 멈추면 프로그램이 끝나지 않고 뒤에 남아
+        PC 를 계속 느리게 만들 수 있으므로, 따로 실행하고 3초까지만 기다린다."""
+        if self._render_ctx is not None or self._vr_renderer is not None:
             self.makeCurrent()
-            self._render_ctx.free()
-            self._render_ctx = None
+            self._free_render_ctx()
             self.doneCurrent()
-        self.player.terminate()
+        t = threading.Thread(target=self._terminate, name="mpv-terminate", daemon=True)
+        t.start()
+        if wait:
+            t.join(SHUTDOWN_WAIT_S)
+            if t.is_alive():
+                self.log_lines.append(f"{time.strftime('%H:%M:%S')} 재생 엔진 종료가 {SHUTDOWN_WAIT_S}초를 넘어 기다리지 않음")
+        return t
+
+    def _terminate(self) -> None:
+        try:
+            self.player.terminate()
+        except Exception:
+            pass
 
     def resizeEvent(self, e):
         super().resizeEvent(e)

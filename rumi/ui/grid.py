@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import os
+import time
 
 from PySide6.QtCore import QSettings, Qt, QTimer, Signal
 from PySide6.QtGui import QAction, QKeySequence
@@ -15,7 +16,7 @@ from .controls import SeekSlider
 from .fullscreen import enter_fullscreen, is_fullscreen, leave_fullscreen
 from .hover_reveal import HoverReveal, bottom_zone
 from .icons import make_icon
-from .mpv_widget import MpvWidget
+from .mpv_widget import SHUTDOWN_WAIT_S, MpvWidget
 from .util import fmt_time
 
 SPEEDS = (0.25, 0.5, 0.75, 1.0, 1.25, 1.5, 2.0, 4.0)
@@ -472,7 +473,10 @@ class GridWindow(QWidget):
     def closeEvent(self, e):
         self.reveal.stop()
         self._tick.stop()
-        for c in self.cells:
-            c.shutdown()
+        # 칸마다 기다리면 16분할에서 오래 걸릴 수 있으므로 한꺼번에 끄고 모두 합쳐 몇 초까지만 기다린다
+        threads = [c.video.shutdown(wait=False) for c in self.cells]
+        deadline = time.monotonic() + SHUTDOWN_WAIT_S
+        for t in threads:
+            t.join(max(deadline - time.monotonic(), 0))
         self.cells = []
         super().closeEvent(e)

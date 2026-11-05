@@ -1,7 +1,8 @@
 """VR(360°/180°) 동영상을 일반 화면으로 보기: 보는 방향·시야를 정해 평면 화면으로 펼친다.
 
-mpv 의 lavfi 필터 v360 을 쓴다. 방향(yaw/pitch)과 시야(fov)는 필터를 다시 만들지 않고
-vf-command 로 바꿀 수 있어 마우스로 끌어 둘러볼 수 있다.
+그래픽 카드 셰이더(rumi/ui/vr_renderer.py)로 펼친다. 방향·시야는 셰이더 값만 바꾸면 되므로
+끌어서 둘러봐도 CPU 부담이 없다. (예전의 v360 필터는 CPU 에서 돌고, 방향을 바꿀 때마다
+큰 계산표를 새로 만들어 PC 가 느려졌다.)
 """
 
 from __future__ import annotations
@@ -9,8 +10,6 @@ from __future__ import annotations
 import math
 import os
 import re
-
-LABEL = "rumivr"
 
 # 이름: (입력 투영, 입체 배치, 메뉴 이름)
 FORMATS = {
@@ -24,7 +23,6 @@ FORMATS = {
 
 DEFAULT_FOV = 100.0
 MIN_FOV, MAX_FOV = 30.0, 150.0
-MAX_OUT_W, MAX_OUT_H = 1920, 1080  # 펼친 화면 크기 상한 (CPU 부담을 줄이기 위해)
 
 _TOKEN_SPLIT = re.compile(r"[^a-z0-9]+")
 
@@ -60,29 +58,18 @@ def clamp_view(yaw: float, pitch: float, fov: float) -> tuple[float, float, floa
     return yaw, max(-90.0, min(90.0, pitch)), max(MIN_FOV, min(MAX_FOV, fov))
 
 
-def out_size(view_w: int, view_h: int) -> tuple[int, int]:
-    """펼친 화면의 크기: 창 비율을 따르되 상한을 넘지 않게, 짝수로."""
-    view_w, view_h = max(view_w, 16), max(view_h, 16)
-    scale = min(1.0, MAX_OUT_W / view_w, MAX_OUT_H / view_h)
-    return int(view_w * scale) // 2 * 2, int(view_h * scale) // 2 * 2
-
-
 def v_fov(h_fov: float, w: int, h: int) -> float:
-    """가로 시야와 화면 비율로 세로 시야를 구한다 (왜곡 없이 보이도록)."""
+    """가로 시야와 화면 비율로 세로 시야를 구한다 (끌어서 둘러볼 때 위아래 이동량 계산용)."""
     return math.degrees(2 * math.atan(math.tan(math.radians(h_fov) / 2) * h / w))
 
 
-def build_filter(fmt: str, w: int, h: int, yaw: float = 0.0, pitch: float = 0.0, fov: float = DEFAULT_FOV) -> str:
+def view_params(fmt: str, yaw: float = 0.0, pitch: float = 0.0, fov: float = DEFAULT_FOV) -> dict:
+    """VR 펼치기 셰이더(rumi/ui/vr_renderer.py)에 넘길 값. 각도는 라디안."""
     projection, stereo, _ = FORMATS[fmt]
     yaw, pitch, fov = clamp_view(yaw, pitch, fov)
-    opts = [f"input={projection}", "output=flat", f"in_stereo={stereo}", "out_stereo=2d",
-            f"w={w}", f"h={h}", f"yaw={yaw:.2f}", f"pitch={pitch:.2f}",
-            f"h_fov={fov:.2f}", f"v_fov={v_fov(fov, w, h):.2f}", "interp=linear"]
-    return f"@{LABEL}:lavfi=[v360={':'.join(opts)}]"
-
-
-def view_commands(yaw: float, pitch: float, fov: float, w: int, h: int) -> list[tuple[str, str]]:
-    """필터를 다시 만들지 않고 방향·시야를 바꾸는 (옵션, 값) 목록 (vf-command 용)."""
-    yaw, pitch, fov = clamp_view(yaw, pitch, fov)
-    return [("yaw", f"{yaw:.2f}"), ("pitch", f"{pitch:.2f}"),
-            ("h_fov", f"{fov:.2f}"), ("v_fov", f"{v_fov(fov, w, h):.2f}")]
+    return {
+        "yaw": math.radians(yaw), "pitch": math.radians(pitch),
+        "tan_half": math.tan(math.radians(fov) / 2),
+        "span": math.radians(180 if projection == "hequirect" else 360),
+        "stereo": {"2d": 0, "tb": 1, "sbs": 2}[stereo],
+    }

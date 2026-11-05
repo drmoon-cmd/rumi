@@ -22,16 +22,16 @@ BAD_IN_A_ROW = 2
 
 
 class LoadGuard(QObject):
-    overloaded = Signal(str)  # 이유 (안내용)
+    overloaded = Signal(str, str)  # 이유 (안내용), 종류: "render"(그래픽 카드·화면) / "decode"(CPU 디코딩)
 
     def __init__(self, player, active: Callable[[], bool], parent=None):
         super().__init__(parent)
         self.player = player
-        self._active = active  # 무거운 설정이 하나라도 켜져 있는지
+        self._active = active  # 재야 하는지 (무거운 설정이 켜져 있거나 CPU 디코딩 중)
         self._clock = QElapsedTimer()
         self._last_tick = 0
         self._max_lag = 0.0
-        self._base: tuple[int, int] | None = None
+        self._base: tuple[int, int, int] | None = None
         self._bad = 0
         self._grace_until = 0
         self._tick = QTimer(self, interval=TICK_MS)
@@ -63,14 +63,14 @@ class LoadGuard(QObject):
         self._max_lag = max(self._max_lag, now - self._last_tick - TICK_MS)
         self._last_tick = now
 
-    def _counters(self) -> tuple[int, int] | None:
+    def _counters(self) -> tuple[int, int, int] | None:
+        """(제때 못 그려 버린 프레임, 디코딩이 늦어 버린 프레임, 보여 준 프레임)"""
         p = self.player
         try:
             if p.pause or p.seeking or p.idle_active or p.paused_for_cache:
                 return None
-            dropped = int(p.frame_drop_count or 0) + int(p.decoder_frame_drop_count or 0)
-            frames = int(p.estimated_frame_number or 0)
-            return dropped, frames
+            return (int(p.frame_drop_count or 0), int(p.decoder_frame_drop_count or 0),
+                    int(p.estimated_frame_number or 0))
         except Exception:
             return None
 
@@ -83,15 +83,22 @@ class LoadGuard(QObject):
         base, self._base = self._base, counters
         if base is None or self._clock.elapsed() < self._grace_until:
             return
-        dropped, frames = counters[0] - base[0], counters[1] - base[1]
+        vo, dec = max(counters[0] - base[0], 0), max(counters[1] - base[1], 0)
+        frames = counters[2] - base[2]
         if frames < 0:  # 탐색으로 프레임 번호가 되돌아감
             return
-        if picture.is_overloaded(max(dropped, 0), frames + max(dropped, 0), lag):
+        dropped = vo + dec
+        if picture.is_overloaded(dropped, frames + dropped, lag):
             self._bad += 1
             if self._bad >= BAD_IN_A_ROW:
-                reason = f"화면이 {lag:.0f}ms 멈춤" if lag > picture.LAG_LIMIT_MS else \
-                    f"2초에 프레임 {dropped}개를 제때 못 그림"
+                kind = "decode" if dec > vo and lag <= picture.LAG_LIMIT_MS else "render"
+                if lag > picture.LAG_LIMIT_MS:
+                    reason = f"화면이 {lag:.0f}ms 멈춤"
+                elif kind == "decode":
+                    reason = f"2초에 프레임 {dec}개를 CPU 가 제때 풀지 못함"
+                else:
+                    reason = f"2초에 프레임 {vo}개를 제때 못 그림"
                 self.reset()
-                self.overloaded.emit(reason)
+                self.overloaded.emit(reason, kind)
         else:
             self._bad = 0
