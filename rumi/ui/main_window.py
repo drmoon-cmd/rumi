@@ -9,7 +9,7 @@ import re
 import time
 from pathlib import Path
 
-from PySide6.QtCore import QCoreApplication, QEvent, QPoint, QSettings, QStandardPaths, Qt, QTimer, QUrl, qVersion
+from PySide6.QtCore import QCoreApplication, QEvent, QLockFile, QPoint, QSettings, QStandardPaths, Qt, QTimer, QUrl, qVersion
 from PySide6.QtGui import QAction, QActionGroup, QDesktopServices, QKeySequence
 from PySide6.QtWidgets import (
     QApplication, QDialog, QDockWidget, QFileDialog, QHBoxLayout, QInputDialog, QLabel, QMainWindow, QMenu,
@@ -532,8 +532,9 @@ class MainWindow(QMainWindow):
         self.vr.changed.connect(self._on_vr_changed)
         self._on_vr_changed(None)
         v.resized.connect(self.vr.on_resized)
-        self.load_guard = LoadGuard(self.player, lambda: self._hwdec == "no" or (picture.is_heavy(
-            self.a_smooth.isChecked(), self.video.quality, self.video.hdr) and not self.video.compat_mode), self)
+        self.load_guard = LoadGuard(self.player, lambda: self.isVisible() and not self.isMinimized() and (
+            self._hwdec == "no" or (picture.is_heavy(
+                self.a_smooth.isChecked(), self.video.quality, self.video.hdr) and not self.video.compat_mode)), self)
         self._hwdec_hint_shown = False
         self.load_guard.overloaded.connect(self._on_overloaded)
 
@@ -584,7 +585,12 @@ class MainWindow(QMainWindow):
         self.set_compat_mode(announce=False)
         self.a_pip_auto.setChecked(s.value("pipAuto", False, type=bool))
         # 지난번에 정상적으로 끝나지 않았으면(멈춰서 강제로 끈 경우 등) 무거운 화질 설정 없이 시작한다
-        crashed = s.value("running", False, type=bool)
+        # Rumi 를 두 개 띄운 경우(파일을 더블클릭해 하나 더 열림)는 먼저 뜬 쪽만 이 표시를 다룬다
+        data_dir().mkdir(parents=True, exist_ok=True)
+        self._instance_lock = QLockFile(str(data_dir() / "running.lock"))
+        self._instance_lock.setStaleLockTime(0)  # 시간이 아니라 그 프로그램이 살아 있는지로 판단
+        self._primary = self._instance_lock.tryLock(0)
+        crashed = self._primary and s.value("running", False, type=bool)
         heavy = picture.is_heavy(s.value("smoothMotion", False, type=bool),
                                  s.value("pictureQuality", "default"), s.value("hdrMode", "auto"))
         self._safe_started = crashed and heavy
@@ -598,8 +604,9 @@ class MainWindow(QMainWindow):
                 self, APP_NAME, "지난번에 Rumi 가 정상적으로 끝나지 않았습니다.\n\n"
                 "PC 가 느려지는 것을 막기 위해 화질 개선·부드러운 움직임·HDR 보정을 끈 채로 시작했습니다. "
                 "화면 메뉴에서 다시 켤 수 있습니다."))
-        s.setValue("running", True)
-        s.sync()
+        if self._primary:
+            s.setValue("running", True)
+            s.sync()
         self.load_guard.start()
         self._skip_rules = self._load_json("skipRules")
         self.playlist.set_repeat_mode(s.value("repeat", "none"))
@@ -648,7 +655,8 @@ class MainWindow(QMainWindow):
         s.setValue("pictureQuality", self._quality_pref)
         s.setValue("hdrMode", self.video.hdr)
         s.setValue("smoothMotion", self.a_smooth.isChecked())
-        s.setValue("running", False)  # 정상 종료 표시
+        if self._primary:
+            s.setValue("running", False)  # 정상 종료 표시
         s.setValue("skipRules", json.dumps(self._skip_rules, ensure_ascii=False))
         s.setValue("subStyle", json.dumps(self._sub_style, ensure_ascii=False))
         s.setValue("hwdecMode", self._hwdec)
@@ -668,6 +676,11 @@ class MainWindow(QMainWindow):
         QCoreApplication.removePostedEvents(self, QEvent.MetaCall)
         self.db.close()
         super().closeEvent(e)
+
+    def release_instance_lock(self) -> None:
+        if getattr(self, "_primary", False):
+            self._instance_lock.unlock()
+            self._primary = False
 
     # ------------------------------------------------------------------ 열기
     def open_paths(self, paths: list[str], play: bool = True) -> None:
@@ -940,10 +953,18 @@ class MainWindow(QMainWindow):
             return
         self.osd(f"녹화 저장: {os.path.basename(path)} ({size / 1_048_576:.1f} MB)")
 
+    def _take_screenshot(self) -> bool:
+        """지금 장면을 저장한다. 파일을 여는 중이라 아직 장면이 없거나 저장할 수 없으면 False."""
+        try:
+            self.player.screenshot()
+            return True
+        except Exception:
+            return False
+
     def screenshot(self) -> None:
         if self._current:
-            self.player.screenshot()
-            self.osd("스크린샷을 바탕화면에 저장했습니다")
+            self.osd("스크린샷을 바탕화면에 저장했습니다" if self._take_screenshot()
+                     else "스크린샷을 저장하지 못했습니다 (영상을 여는 중이거나 저장할 수 없는 위치)")
 
     def osd(self, text: str) -> None:
         if self._closed:
@@ -1098,6 +1119,8 @@ class MainWindow(QMainWindow):
     def _on_vr_changed(self, fmt) -> None:
         if fmt is None:
             self.area.message.hide()
+        elif self._zoom > 0:
+            self.reset_zoom()
         self.a_vr.setChecked(fmt is not None)
         for a in self.vr_group.actions():
             a.setChecked(a.data() == fmt)
@@ -1252,14 +1275,16 @@ class MainWindow(QMainWindow):
 
     # ------------------------------------------------------------------ 상태 이벤트
     def _on_time(self, t: float) -> None:
-        self._time = t
+        prev, self._time = self._time, t
         self.controls.set_time(t)
         outro = self._cur_skip[1]
-        if (outro and not self._outro_done and self._clip_index is None and self._duration > outro + 5
-                and t >= self._duration - outro):
-            self._outro_done = True
-            self.osd("엔딩 건너뜀")
-            QTimer.singleShot(0, self._on_eof)
+        if outro and not self._outro_done and self._clip_index is None and self._duration > outro + 5:
+            edge = self._duration - outro
+            if t >= edge:
+                self._outro_done = True  # 이 파일에서는 한 번만 판단
+                if prev < edge and 0 <= t - prev < 2.0:  # 탐색으로 건너온 것이 아니라 재생하다 닿음
+                    self.osd("엔딩 건너뜀")
+                    QTimer.singleShot(0, self._on_eof)
 
     def _on_duration(self, d: float) -> None:
         self._duration = d
@@ -1474,7 +1499,11 @@ class MainWindow(QMainWindow):
             self._burst_timer.stop()
             self.osd("연속 캡처를 마쳤습니다 (바탕화면)")
             return
-        self.player.screenshot()
+        if not self._take_screenshot():
+            self._burst_left = 0
+            self._burst_timer.stop()
+            self.osd("연속 캡처를 중단했습니다 (장면을 저장하지 못함)")
+            return
         self._burst_left -= 1
         self.osd(f"연속 캡처 · 남은 {self._burst_left}장")
 

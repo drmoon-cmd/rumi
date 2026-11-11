@@ -304,7 +304,11 @@ class MpvWidget(QOpenGLWidget):
         for name, value in picture.hdr_options(self.hdr).items():
             self._set_option(name, value)
         if self.compat_mode:
-            p.command("apply-profile", "fast")
+            try:
+                p.command("apply-profile", "fast")
+            except Exception:  # 'fast' 프로필이 없는 옛 mpv: 가벼운 확대 방식만 직접 지정
+                for name in ("scale", "dscale", "cscale"):
+                    self._set_option(name, "bilinear")
         self._set_option("glsl-shaders", shaders)
 
     def set_vr(self, view: dict | None) -> None:

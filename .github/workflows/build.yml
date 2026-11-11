@@ -44,6 +44,15 @@ jobs:
             if (-not (Test-Path "dist\Rumi\_internal\rumi\shaders\$f")) { throw "셰이더가 빠졌습니다: $f" }
           }
           Write-Host "셰이더 포함 확인"
+      - name: 설치판 실행 점검 (재생·VR·화질 설정·종료)
+        shell: pwsh
+        env: { QT_OPENGL: software }   # 빌드 서버에는 그래픽 카드가 없어 소프트웨어 OpenGL 로 점검
+        run: |
+          $out = "$PWD\selftest.txt"
+          $p = Start-Process -FilePath "dist\Rumi\Rumi.exe" -ArgumentList "--selftest", "`"$out`"" -PassThru
+          if (-not $p.WaitForExit(150000)) { $p.Kill(); if (Test-Path $out) { Get-Content $out -Encoding utf8 }; throw "설치판이 150초 안에 끝나지 않았습니다" }
+          if (Test-Path $out) { Get-Content $out -Encoding utf8 } else { Write-Host "(결과 파일 없음)" }
+          if ($p.ExitCode -ne 0) { throw "설치판 실행 점검 실패 (종료 코드 $($p.ExitCode))" }
       - name: 설치 파일 만들기 (Inno Setup)
         run: |
           choco install innosetup -y --no-progress

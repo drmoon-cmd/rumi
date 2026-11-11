@@ -34,9 +34,17 @@ def main() -> int:
 
     from . import APP_NAME
 
+    # 자가 진단(--selftest 결과파일): 사용자의 설정·재생 기록을 건드리지 않도록 다른 이름으로 실행
+    selftest_out = None
+    if "--selftest" in sys.argv:
+        i = sys.argv.index("--selftest")
+        selftest_out = os.path.abspath(sys.argv[i + 1]) if i + 1 < len(sys.argv) else os.path.abspath("selftest.txt")
+        del sys.argv[i:i + 2]
+    name = APP_NAME if selftest_out is None else APP_NAME + "SelfTest"
+
     app = QApplication(sys.argv)
-    app.setApplicationName(APP_NAME)
-    app.setOrganizationName(APP_NAME)
+    app.setApplicationName(name)
+    app.setOrganizationName(name)
 
     # Qt 기본 대화상자 버튼(닫기/확인/취소 등)을 한국어로
     from PySide6.QtCore import QLibraryInfo, QTranslator
@@ -56,13 +64,25 @@ def main() -> int:
     files = [a for a in sys.argv[1:] if not a.startswith("-")]
     win = MainWindow(files)
     win.show()
+    selftest = None
+    if selftest_out is not None:
+        from .selftest import SelfTest
+        selftest = SelfTest(win, selftest_out)
     code = app.exec()
+    if selftest is not None:
+        selftest.note("창을 닫고 정상적으로 끝남")
+        code = selftest.exit_code()
     # 창을 닫은 뒤에는 남은 것을 기다리지 않고 곧바로 끝낸다. 재생 엔진이나 외부 도구가 어떤 이유로
     # 멈춰 있어도 프로그램이 뒤에 남아 CPU·그래픽 카드를 계속 쓰는 일이 없게 한다.
     from PySide6.QtCore import QSettings
     QSettings().sync()
-    sys.stdout.flush()
-    sys.stderr.flush()
+    win.release_instance_lock()
+    for stream in (sys.stdout, sys.stderr):  # Windows 설치판(창 모드)에서는 None 이다
+        try:
+            if stream is not None:
+                stream.flush()
+        except Exception:
+            pass
     os._exit(code)
 
 

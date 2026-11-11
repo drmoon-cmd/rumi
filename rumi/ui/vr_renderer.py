@@ -45,6 +45,9 @@ void main() {
 """
 
 FRAGMENT = """
+#ifdef GL_ES
+precision highp float;
+#endif
 uniform sampler2D tex;
 uniform float yaw;      // 라디안
 uniform float pitch;
@@ -89,20 +92,13 @@ class VrRenderer:
               and self.program.link())
         self.error = None if ok else (self.program.log() or "셰이더를 만들지 못했습니다")
         self.vao = QOpenGLVertexArrayObject()
-        self.vao.create()
+        self.vao.create()  # 지원하지 않는 환경에서는 만들어지지 않는다 (그래도 동작하도록 그릴 때마다 속성을 지정)
         self.vbo = QOpenGLBuffer(QOpenGLBuffer.VertexBuffer)
         self.vbo.create()
-        self.vao.bind()
         self.vbo.bind()
         quad = struct.pack("8f", -1, -1, 1, -1, -1, 1, 1, 1)
         self.vbo.allocate(quad, len(quad))
-        self.program.bind()
-        loc = self.program.attributeLocation("vert")
-        self.program.enableAttributeArray(loc)
-        self.program.setAttributeBuffer(loc, GL_FLOAT, 0, 2)
-        self.program.release()
         self.vbo.release()
-        self.vao.release()
         try:
             self.max_tex = int(self.f.glGetIntegerv(GL_MAX_TEXTURE_SIZE)) if hasattr(self.f, "glGetIntegerv") else 8192
         except Exception:
@@ -149,14 +145,23 @@ class VrRenderer:
         p.setUniformValue1f(p.uniformLocation("aspect"), out_h / max(out_w, 1))
         p.setUniformValue1f(p.uniformLocation("span"), view["span"])
         p.setUniformValue1i(p.uniformLocation("stereo"), view["stereo"])
-        self.vao.bind()
+        if self.vao.isCreated():
+            self.vao.bind()
+        self.vbo.bind()
+        loc = p.attributeLocation("vert")
+        p.enableAttributeArray(loc)
+        p.setAttributeBuffer(loc, GL_FLOAT, 0, 2)
         f.glDrawArrays(GL_TRIANGLE_STRIP, 0, 4)
-        self.vao.release()
+        p.disableAttributeArray(loc)
+        self.vbo.release()
+        if self.vao.isCreated():
+            self.vao.release()
         p.release()
         f.glBindTexture(GL_TEXTURE_2D, 0)
 
     def free(self) -> None:
         self.fbo = None
         self.vbo.destroy()
-        self.vao.destroy()
+        if self.vao.isCreated():
+            self.vao.destroy()
         self.program.removeAllShaders()

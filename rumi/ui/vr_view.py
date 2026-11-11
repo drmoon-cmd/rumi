@@ -63,7 +63,11 @@ class VrView(QObject):
 
     def on_file_loaded(self, path: str) -> None:
         """새 파일: 자동 감지가 켜져 있으면 VR 영상인지 보고 켜거나 끈다."""
-        fmt = self._guess(path) if self.auto else None
+        if not self.auto:
+            if self.active:
+                self.reset_view(announce=False)
+            return
+        fmt = self._guess(path)
         if fmt != self.fmt:
             self.set_format(fmt, announce=fmt is not None)
         elif fmt is not None:
