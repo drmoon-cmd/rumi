@@ -45,7 +45,8 @@ class Worker(QThread):
 
 def run_with_progress(parent: QWidget, title: str, fn: Callable[[Worker], Any],
                       on_done: Callable[[Any], None],
-                      on_error: Callable[[str], None] | None = None) -> Worker:
+                      on_error: Callable[[str], None] | None = None,
+                      on_cancel: Callable[[], None] | None = None) -> Worker:
     """진행 대화상자를 띄우고 fn 을 백그라운드에서 실행. 취소 버튼 지원."""
     dlg = QProgressDialog(title, "취소", 0, 0, parent)
     dlg.setWindowTitle(title)
@@ -69,7 +70,7 @@ def run_with_progress(parent: QWidget, title: str, fn: Callable[[Worker], Any],
     worker.progress.connect(on_progress)
     worker.succeeded.connect(lambda r: (finish(), on_done(r)))
     worker.failed.connect(lambda msg: (finish(), on_error and on_error(msg)))
-    worker.cancelled.connect(finish)
+    worker.cancelled.connect(lambda: (finish(), on_cancel and on_cancel()))
     dlg.canceled.connect(worker.cancel)
     worker.start()
     return worker

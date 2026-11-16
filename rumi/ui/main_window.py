@@ -12,7 +12,7 @@ from pathlib import Path
 from PySide6.QtCore import QCoreApplication, QEvent, QLockFile, QPoint, QSettings, QStandardPaths, Qt, QTimer, QUrl, qVersion
 from PySide6.QtGui import QAction, QActionGroup, QDesktopServices, QKeySequence
 from PySide6.QtWidgets import (
-    QApplication, QDialog, QDockWidget, QFileDialog, QHBoxLayout, QInputDialog, QLabel, QMainWindow, QMenu,
+    QApplication, QDialog, QDockWidget, QFileDialog, QFrame, QHBoxLayout, QVBoxLayout, QInputDialog, QLabel, QMainWindow, QMenu,
     QMessageBox, QToolButton, QWidget,
 )
 
@@ -39,6 +39,7 @@ from .dialogs import (
 )
 from .fullscreen import enter_fullscreen, is_fullscreen, leave_fullscreen
 from .merge_dialog import MergeDialog
+from .edge_reveal import EdgeReveal
 from .hover_reveal import HoverReveal, bottom_zone, top_zone
 from .seek_preview import SeekPreview
 from .load_guard import LoadGuard
@@ -46,7 +47,7 @@ from .vr_view import VrView
 from .watchdog import HangWatchdog
 from .workers import run_with_progress
 from .pip import MAX_PIPS, PipView
-from .playlist import PlaylistPanel
+from .playlist import PlaylistPanel, _drive_missing
 from .theme import DEFAULT_THEME, THEMES, apply_theme
 from .util import fmt_time, reveal_in_file_manager
 
@@ -91,6 +92,9 @@ SHORTCUT_HELP = """
 <tr><td><b>Ctrl + G</b></td><td>화면 분할 보기 (CCTV) — 파일 골라 열기, Esc 닫기, Space 전체 일시정지</td></tr>
 </table>
 """
+
+
+LAYOUT_VERSION = 2   # 패널 배치 저장 형식. 올리면 예전에 저장된 배치는 버리고 기본 배치로 시작한다
 
 
 def data_dir() -> Path:
@@ -138,6 +142,15 @@ class VideoArea(QWidget):
         self.message.hide()
         self._message_timer = QTimer(self, singleShot=True, interval=1800)
         self._message_timer.timeout.connect(self.message.hide)
+        # 영상 위에 겹쳐 뜨는 옆 패널 (오른쪽 끝에 마우스를 대면 나오는 재생목록)
+        self.side = QFrame(self)
+        self.side.setObjectName("sidePanel")
+        self.side.setAutoFillBackground(True)
+        self.side.setFrameShape(QFrame.StyledPanel)
+        self.side.setCursor(Qt.ArrowCursor)  # 전체화면에서 영상 쪽 커서를 숨겨도 패널 위에서는 보이게
+        side_lay = QVBoxLayout(self.side)
+        side_lay.setContentsMargins(1, 1, 1, 1)
+        self.side.hide()
         self.overlay = False
         self.setObjectName("videoArea")
         self.setStyleSheet("#videoArea { background: black; }")
@@ -168,6 +181,10 @@ class VideoArea(QWidget):
         self.controls.raise_()
         self.topbar.setGeometry(0, 0, w, self.topbar.sizeHint().height())
         self.topbar.raise_()
+        top = self.topbar.height() if self.overlay else 0
+        sw = max(min(int(w * 0.3), 520, w - 80), min(340, w))
+        self.side.setGeometry(w - sw, top, sw, max(h - ch - top, 0))
+        self.side.raise_()
         for pip in self.findChildren(PipView):
             pip.move_within_parent(pip.pos())
             pip.raise_()
@@ -225,8 +242,9 @@ class MainWindow(QMainWindow):
         self.clips_dock.setObjectName("clips")
         self.clips_dock.setWidget(self.clips_panel)
         self.addDockWidget(Qt.RightDockWidgetArea, self.clips_dock)
-        self.tabifyDockWidget(self.dock, self.clips_dock)
-        self.dock.raise_()
+        self._default_layout()
+        self._dock_placeholder = QWidget()  # 재생목록을 영상 위 옆 패널로 옮긴 동안 패널 자리를 채운다
+        self._edge = EdgeReveal(self.area, self.area.side, self._can_show_side, self._show_side, self._hide_side)
 
         self._reveal = HoverReveal(
             self.area, [(self.area.topbar, top_zone), (self.controls, bottom_zone)],
@@ -301,7 +319,13 @@ class MainWindow(QMainWindow):
         self.a_exit_full = A("전체화면 해제", lambda: is_fullscreen(self) and self.toggle_fullscreen(), "Esc")
         self.a_ontop = A("항상 위", self.toggle_on_top, "Ctrl+T", checkable=True)
         self.a_screenshot = A("스크린샷", self.screenshot, "S")
-        self.a_playlist = A("재생목록", lambda: self._toggle_dock(self.dock), "F9")
+        self.a_playlist = A("재생목록", self.toggle_playlist, "F9")
+        self.a_edge_list = A("오른쪽 끝에 마우스를 대면 재생목록 보이기", lambda: None, checkable=True)
+        self.a_edge_list.setChecked(True)
+        self.a_reopen_tab = A("닫은 재생목록 탭 다시 열기", self.reopen_closed_tab, "Ctrl+Shift+T")
+        self.a_lock_layout = A("패널 위치 잠금 (실수로 떼어지지 않게)", self._apply_layout_lock, checkable=True)
+        self.a_lock_layout.setChecked(True)
+        self.a_reset_layout = A("창 배치 초기화", self.reset_layout)
         self.a_clips = A("구간 목록", lambda: self._toggle_dock(self.clips_dock), "F10")
         self.a_mark_in = A("구간 시작점 찍기", self.mark_in, "I")
         self.a_mark_out = A("구간 끝점 찍기 (구간 추가)", self.mark_out, "O")
@@ -426,7 +450,9 @@ class MainWindow(QMainWindow):
         m.addAction(self.a_sub_style)
 
         m = mb.addMenu("화면(&V)")
-        m.addActions([self.a_full, self.a_ontop, self.a_playlist])
+        m.addActions([self.a_full, self.a_ontop, self.a_playlist, self.a_clips, self.a_reopen_tab])
+        panels = m.addMenu("패널 배치")
+        panels.addActions([self.a_edge_list, self.a_lock_layout, self.a_reset_layout])
         aspect = m.addMenu("화면 비율")
         group = QActionGroup(self)
         for label, value in (("자동", "-1"), ("16:9", "16:9"), ("4:3", "4:3"),
@@ -550,6 +576,9 @@ class MainWindow(QMainWindow):
         self._record_timer = QTimer(self, interval=1000)
         self._record_timer.timeout.connect(self._update_record_label)
         c.playlist_toggle.connect(self.a_playlist.trigger)
+        self.dock.visibilityChanged.connect(self._on_dock_visibility)
+        self.playlist.tab_closed.connect(
+            lambda name: self.osd(f"‘{name}’ 탭을 닫았습니다 · Ctrl+Shift+T 로 되돌리기"))
         v.context_menu_requested.connect(lambda pos: self.main_menu().exec(pos))
         top = self.area.topbar
         top.menu_btn.clicked.connect(
@@ -573,8 +602,11 @@ class MainWindow(QMainWindow):
             self.restoreGeometry(geo)
         else:
             self.resize(1280, 760)
+        self.a_lock_layout.setChecked(s.value("layoutLocked", True, type=bool))
+        self._apply_layout_lock()
+        self.a_edge_list.setChecked(s.value("edgeList", True, type=bool))
         if state := s.value("windowState"):
-            self.restoreState(state)
+            self.restoreState(state, LAYOUT_VERSION)  # 예전 형식이면 복원하지 않고 기본 배치를 쓴다
         self.player.volume = float(s.value("volume", 100))
         desktop = QStandardPaths.writableLocation(QStandardPaths.DesktopLocation)
         if desktop and os.path.isdir(desktop):
@@ -608,6 +640,7 @@ class MainWindow(QMainWindow):
             s.setValue("running", True)
             s.sync()
         self.load_guard.start()
+        self._edge.start()
         self._skip_rules = self._load_json("skipRules")
         self.playlist.set_repeat_mode(s.value("repeat", "none"))
         try:
@@ -637,6 +670,7 @@ class MainWindow(QMainWindow):
         self._save_position()
         self._save_timer.stop()
         self._reveal.stop()
+        self._edge.stop()
         self._watchdog.stop()
         self.load_guard.stop()
         self.stop_record(report=False)
@@ -645,7 +679,9 @@ class MainWindow(QMainWindow):
         s = self.settings
         s.setValue("geometry", self.saveGeometry())
         self.hide()  # 위치를 저장한 뒤, 정리하는 동안 창이 굳어 보이지 않게 먼저 숨긴다
-        s.setValue("windowState", self.saveState())
+        s.setValue("windowState", self.saveState(LAYOUT_VERSION))
+        s.setValue("layoutLocked", self.a_lock_layout.isChecked())
+        s.setValue("edgeList", self.a_edge_list.isChecked())
         s.setValue("volume", self.player.volume)
         s.setValue("repeat", self.playlist.repeat_mode().value)
         s.setValue("playlists", json.dumps(self.playlist.to_state(), ensure_ascii=False))
@@ -1320,6 +1356,9 @@ class MainWindow(QMainWindow):
 
     def _on_load_failed(self, msg: str) -> None:
         name = os.path.basename(self._current or "") or self._current
+        if self._current and "://" not in self._current and _drive_missing(self._current):
+            self.osd(f"이 파일이 든 드라이브가 연결되어 있지 않습니다: {name}")
+            return
         self.osd(f"재생할 수 없습니다: {name}")
         self.statusBar().showMessage(f"재생 실패: {self._current} ({msg})", 8000)
 
@@ -1696,6 +1735,87 @@ class MainWindow(QMainWindow):
             dock.show()
             dock.raise_()
 
+    # ------------------------------------------------------------------ 패널 배치
+    def _default_layout(self) -> None:
+        """기본 배치: 오른쪽에 재생목록, 그 아래에 구간 목록(처음에는 닫혀 있음)."""
+        for d in (self.dock, self.clips_dock):
+            d.setFloating(False)
+            self.addDockWidget(Qt.RightDockWidgetArea, d)
+        self.splitDockWidget(self.dock, self.clips_dock, Qt.Vertical)
+        self.dock.show()
+        self.clips_dock.hide()
+        self.resizeDocks([self.dock], [380], Qt.Horizontal)
+
+    def reset_layout(self) -> None:
+        if is_fullscreen(self):
+            self.toggle_fullscreen()
+        self._hide_side()
+        self._default_layout()
+        self.osd("창 배치를 처음 상태로 되돌렸습니다")
+
+    def _apply_layout_lock(self) -> None:
+        locked = self.a_lock_layout.isChecked()
+        features = QDockWidget.DockWidgetClosable
+        if not locked:
+            features |= QDockWidget.DockWidgetMovable | QDockWidget.DockWidgetFloatable
+        for d in (self.dock, self.clips_dock):
+            if locked and d.isFloating():
+                d.setFloating(False)
+            d.setFeatures(features)
+
+    # ---- 영상 위에 겹쳐 뜨는 재생목록 (오른쪽 끝에 마우스를 대면 나온다)
+    def _dock_shown(self) -> bool:
+        return self.dock.isVisible() and not self.dock.visibleRegion().isEmpty()
+
+    def _can_show_side(self) -> bool:
+        if not self.a_edge_list.isChecked() or self._closed:
+            return False
+        return is_fullscreen(self) or not self._dock_shown()
+
+    def _show_side(self, pinned: bool = False) -> None:
+        side = self.area.side
+        if self.playlist.parent() is not side:
+            self.dock.setWidget(self._dock_placeholder)
+            side.layout().addWidget(self.playlist)
+            self.playlist.show()
+        self._edge.pinned = pinned
+        self.area._relayout()
+        side.show()
+        side.raise_()
+
+    def _hide_side(self) -> None:
+        self._edge.pinned = False
+        self.area.side.hide()
+
+    def _playlist_to_dock(self) -> None:
+        """재생목록을 옆 패널에서 원래 패널로 돌려놓는다."""
+        self._hide_side()
+        if self.dock.widget() is not self.playlist:
+            self.dock.setWidget(self.playlist)
+            self.playlist.show()
+
+    def _on_dock_visibility(self, visible: bool) -> None:
+        if visible and not is_fullscreen(self) and not self._closed:
+            self._playlist_to_dock()
+
+    def toggle_playlist(self) -> None:
+        """F9·목록 버튼. 전체화면에서는 영상 위에 겹쳐 띄우고(다시 누를 때까지 유지), 창 모드에서는 패널을 여닫는다."""
+        if is_fullscreen(self):
+            if self.area.side.isVisible():
+                self._hide_side()
+            else:
+                self._show_side(pinned=True)
+            return
+        if self.area.side.isVisible():
+            self._hide_side()
+        self._toggle_dock(self.dock)
+
+    def reopen_closed_tab(self) -> None:
+        if self.playlist.reopen_closed_tab():
+            self.osd("닫은 탭을 다시 열었습니다")
+        else:
+            self.osd("되돌릴 탭이 없습니다")
+
     # ------------------------------------------------------------------ PIP
     def add_pip(self, path: str, sync: bool, auto_partner: bool = False) -> PipView | None:
         if len(self._pips) >= MAX_PIPS:
@@ -1816,14 +1936,18 @@ class MainWindow(QMainWindow):
         docks = (self.dock, self.clips_dock)
         if is_fullscreen(self):
             self.menuBar().show()
+            self._hide_side()
             for d, visible in zip(docks, self._docks_visible):
                 d.setVisible(visible)
+            if self._docks_visible[0]:
+                self._playlist_to_dock()
             self.area.set_overlay(False)
             self._reveal.stop()
             leave_fullscreen(self)
         else:
             # 재생목록·구간 목록 등 모든 패널을 숨긴다 (탭으로 겹친 패널 포함)
             self._docks_visible = [d.isVisible() for d in docks]
+            self._hide_side()
             self.menuBar().hide()
             for d in docks:
                 d.hide()

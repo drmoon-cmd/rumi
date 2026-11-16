@@ -51,6 +51,19 @@ def expand_paths(paths: list[str]) -> list[str]:
     return out
 
 
+def _drive_missing(path: str) -> bool:
+    """이 파일이 든 드라이브(또는 네트워크 위치)가 지금 연결되어 있지 않은가."""
+    drive = os.path.splitdrive(path)[0]
+    if drive:
+        return not os.path.exists(drive + os.sep)
+    parts = path.split("/")
+    # /media/사용자/하드이름/…, /Volumes/하드이름/…, /mnt/하드이름/…
+    for depth, prefix in ((4, "/media/"), (4, "/run/media/"), (3, "/Volumes/"), (3, "/mnt/")):
+        if path.startswith(prefix) and len(parts) > depth:
+            return not os.path.isdir("/".join(parts[:depth]))
+    return False
+
+
 class PlaylistTab(QListWidget):
     """탭 하나 = 재생목록 하나."""
 
@@ -59,6 +72,7 @@ class PlaylistTab(QListWidget):
     def __init__(self, name: str):
         super().__init__()
         self.name = name
+        self.pinned = False   # 고정한 탭: 닫히지 않고, 파일을 열어도 목록이 비워지지 않는다
         self._current: QListWidgetItem | None = None
         self.setDragDropMode(QAbstractItemView.InternalMove)
         self.setSelectionMode(QAbstractItemView.ExtendedSelection)
@@ -88,8 +102,9 @@ class PlaylistTab(QListWidget):
     def paths(self) -> list[str]:
         return [self.item(i).data(Qt.UserRole) for i in range(self.count())]
 
-    def add_files(self, paths: list[str]) -> None:
-        for p in expand_paths(paths):
+    def add_files(self, paths: list[str], as_is: bool = False) -> None:
+        """as_is: 폴더 펼치기·존재 확인 없이 그대로 넣는다 (저장해 둔 목록을 되살릴 때)."""
+        for p in (paths if as_is else expand_paths(paths)):
             item = QListWidgetItem(os.path.basename(p) or p)
             item.setData(Qt.UserRole, p)
             try:
@@ -241,6 +256,7 @@ _EXPLORER_EXTS = set(VIDEO_EXTENSIONS) | set(PLAYLIST_EXTENSIONS)
 class PlaylistPanel(QWidget):
     play_requested = Signal(str)
     merge_requested = Signal(list)   # 여러 파일을 하나로 합치기
+    tab_closed = Signal(str)         # 닫은 탭 이름 (되돌릴 수 있다고 알려 주기 위해)
 
     def __init__(self, parent=None):
         super().__init__(parent)
@@ -262,6 +278,9 @@ class PlaylistPanel(QWidget):
         add.clicked.connect(lambda: self.new_tab())
         self.tabs.setCornerWidget(add, Qt.TopRightCorner)
         self._playing: PlaylistTab | None = None  # 재생 중인 항목이 있는 탭
+        self._closed: list[dict] = []             # 닫은 탭 (되돌리기용, 최근 10개)
+        self.tabs.currentChanged.connect(lambda _i: self._update_close_buttons())
+        bar.tabMoved.connect(lambda _a, _b: self._update_close_buttons())
 
         self.repeat = QComboBox()
         for mode, label in REPEAT_LABELS.items():
@@ -380,34 +399,62 @@ class PlaylistPanel(QWidget):
         self._update_close_buttons()
         return t
 
+    def _tab_label(self, t: PlaylistTab) -> str:
+        return f"📌 {t.name}" if t.pinned else t.name
+
     def rename_tab(self, index: int) -> None:
         t = self.tab(index)
         name, ok = QInputDialog.getText(self, "탭 이름 바꾸기", "이름:", text=t.name)
         if ok and name.strip():
             t.name = name.strip()
-            self.tabs.setTabText(index, t.name)
+            self.tabs.setTabText(index, self._tab_label(t))
+
+    def set_pinned(self, index: int, on: bool) -> None:
+        t = self.tab(index)
+        t.pinned = on
+        self.tabs.setTabText(index, self._tab_label(t))
+        self._update_close_buttons()
 
     def close_tab(self, index: int) -> None:
+        """탭 닫기. 묻지 않고 닫되, '닫은 탭 다시 열기'로 되돌릴 수 있게 기억해 둔다."""
         if self.tabs.count() <= 1:
             return
         t = self.tab(index)
-        if t.count() and QMessageBox.question(
-                self, "탭 닫기", f"'{t.name}' 탭을 닫을까요? (목록 {t.count()}개, 파일은 지워지지 않습니다)"
-        ) != QMessageBox.Yes:
+        if t.pinned:
             return
+        if t.count():
+            self._closed.append({"name": t.name, "paths": t.paths(), "index": index})
+            del self._closed[:-10]
         if t is self._playing:
             self._playing = None
         self.tabs.removeTab(index)
         t.deleteLater()
         self._update_close_buttons()
+        if t.count():
+            self.tab_closed.emit(t.name)
+
+    def can_reopen_tab(self) -> bool:
+        return bool(self._closed)
+
+    def reopen_closed_tab(self) -> bool:
+        if not self._closed:
+            return False
+        c = self._closed.pop()
+        t = self.new_tab(c["name"], c["paths"])
+        self.tabs.tabBar().moveTab(self.tabs.indexOf(t), min(c["index"], self.tabs.count() - 1))
+        self.tabs.setCurrentWidget(t)
+        return True
 
     def _update_close_buttons(self) -> None:
-        # 탭이 하나뿐이면 닫기 버튼을 숨긴다
+        # 닫기(×) 버튼은 지금 보고 있는 탭에만 둔다: 다른 탭을 고르려다 닫는 실수를 막는다.
+        # 탭이 하나뿐이거나 고정한 탭이면 숨긴다.
         only = self.tabs.count() <= 1
+        current = self.tabs.currentIndex()
         for i in range(self.tabs.count()):
-            btn = self.tabs.tabBar().tabButton(i, QTabBar.RightSide)
-            if btn:
-                btn.setVisible(not only)
+            for side in (QTabBar.RightSide, QTabBar.LeftSide):
+                btn = self.tabs.tabBar().tabButton(i, side)
+                if btn:
+                    btn.setVisible(not only and i == current and not self.tab(i).pinned)
 
     def _on_tab_double_clicked(self, index: int) -> None:
         if index >= 0:
@@ -421,8 +468,14 @@ class PlaylistPanel(QWidget):
         menu.addAction("새 탭", lambda: self.new_tab())
         if index >= 0:
             menu.addAction("이름 바꾸기…", lambda: self.rename_tab(index))
+            pinned = self.tab(index).pinned
+            pin = menu.addAction("탭 고정 (닫히지 않게)", lambda: self.set_pinned(index, not pinned))
+            pin.setCheckable(True)
+            pin.setChecked(pinned)
             close = menu.addAction("탭 닫기", lambda: self.close_tab(index))
-            close.setEnabled(self.tabs.count() > 1)
+            close.setEnabled(self.tabs.count() > 1 and not pinned)
+        reopen = menu.addAction("닫은 탭 다시 열기\tCtrl+Shift+T", self.reopen_closed_tab)
+        reopen.setEnabled(self.can_reopen_tab())
         menu.exec(self.tabs.tabBar().mapToGlobal(pos))
 
     # ---- 탐색기 ----
@@ -578,7 +631,11 @@ class PlaylistPanel(QWidget):
         return self.tab().paths()
 
     def set_files(self, paths: list[str]) -> None:
+        """파일 열기: 보고 있는 탭의 목록을 바꾼다. 고정한 탭이면 비우지 않고 뒤에 더한다."""
         t = self.tab()
+        if t.pinned:
+            t.add_files(paths)
+            return
         t.clear_all()
         t.add_files(paths)
         if t is self._playing:
@@ -661,7 +718,7 @@ class PlaylistPanel(QWidget):
     def to_state(self) -> dict:
         cur = self.explorer.currentIndex()
         return {"current": self.tabs.currentIndex(),
-                "tabs": [{"name": t.name, "paths": t.paths()} for t in self.all_tabs()],
+                "tabs": [{"name": t.name, "paths": t.paths(), "pinned": t.pinned} for t in self.all_tabs()],
                 "explorer": self.explorer_btn.isChecked(),
                 "explorerPath": self._path_of(cur) if cur.isValid() else "",
                 "split": self.split.sizes()}
@@ -682,6 +739,10 @@ class PlaylistPanel(QWidget):
         self._playing = None
         for t in tabs:
             new = self.new_tab(str(t.get("name") or DEFAULT_TAB_NAME))
-            # 사라진 파일은 빼고 복원 (URL 은 유지)
-            new.add_files([p for p in t.get("paths", []) if "://" in p or os.path.exists(p)])
+            # 사라진 파일은 빼고 복원 (URL 은 유지). 드라이브째 연결되어 있지 않은 파일은 남겨 둔다:
+            # 외장 하드를 뽑았다고 목록이 비워지면 안 된다
+            new.add_files([p for p in t.get("paths", []) if isinstance(p, str)
+                           and ("://" in p or os.path.isfile(p) or _drive_missing(p))], as_is=True)
+            if t.get("pinned"):
+                self.set_pinned(self.tabs.indexOf(new), True)
         self.tabs.setCurrentIndex(min(max(int(state.get("current", 0)), 0), self.tabs.count() - 1))
