@@ -103,6 +103,11 @@ Windows, macOS, Linux에서 동작합니다 (Python + Qt(PySide6) + libmpv).
    - '이름 붙이기'로 드라이브에 알아보기 쉬운 이름(예: 백업 3번)을 붙일 수 있습니다.
    - 동영상 탭의 찾기는 뽑아 둔 드라이브의 파일도 찾습니다 (어느 드라이브에 있는지 표시).
 2. **중복 정리 → 중복 찾기**: *내용이 완전히 같은* 파일과, 이름·해상도·화질·형식이 달라도 *장면이 같은* 영상을 찾습니다.
+   그룹을 고르면 아래에 영상별 장면 그림 3장이 나란히 나와, 지우기 전에 같은 영상인지 눈으로 확인할 수 있습니다
+   (스캔 때 저장해 둔 그림이라 뽑아 둔 드라이브의 영상도 보입니다).
+   '드라이브 기준 선택'으로 "이 드라이브의 사본을 정리 대상으로" / "이 드라이브의 사본만 남기기"를 한 번에 고릅니다.
+   **드라이브별 정리 계획** 탭은 표시해 둔 파일을 드라이브별로 모아 보여 주고, 그 드라이브를 꽂으면 알려 주며
+   '정리 실행' 한 번으로 확인 후 처리합니다.
    앞뒤를 잘라 길이가 달라진 영상은 찾지 못합니다. 뽑아 둔 드라이브의 파일은 '표시만 하기'까지 되고,
    옮기거나 지우는 것은 연결했을 때 됩니다.
    크기 → 부분 해시 → 전체 해시(BLAKE2b) 순서로 비교하므로, 크기가 같은 파일만 끝까지 읽습니다.
@@ -162,13 +167,13 @@ pytest            # 라이브러리/중복 정리 로직 테스트
 
 | OS | 명령 | 결과 |
 |---|---|---|
-| Windows | `python packaging/build.py` 다음 `iscc packaging\windows\rumi.iss` | `dist/RumiSetup-0.3.17.exe` (시작 메뉴, 파일 연결 선택) |
+| Windows | `python packaging/build.py` 다음 `iscc packaging\windows\rumi.iss` | `dist/RumiSetup-0.3.18.exe` (시작 메뉴, 파일 연결 선택) |
 | macOS | `python packaging/build.py` | `dist/Rumi.app` |
 | Linux | `python packaging/build.py` | `dist/Rumi/Rumi` |
 
 Windows에서는 `libmpv-2.dll`을 `packaging/windows/` 아래 아무 곳에 두거나, `RUMI_LIBMPV` 환경 변수로 경로를 지정하세요.
 
-각 OS에서 직접 빌드하지 않아도 됩니다. GitHub의 **Actions → build → Run workflow**를 실행하면(또는 `v0.3.17` 같은 태그를 푸시하면) 세 OS용 설치 파일이 한 번에 만들어집니다.
+각 OS에서 직접 빌드하지 않아도 됩니다. GitHub의 **Actions → build → Run workflow**를 실행하면(또는 `v0.3.18` 같은 태그를 푸시하면) 세 OS용 설치 파일이 한 번에 만들어집니다.
 
 ## 데이터 위치
 

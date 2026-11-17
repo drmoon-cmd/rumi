@@ -100,10 +100,18 @@ def build_catalog(db: LibraryDB, folder_ids: list[int] | None = None, progress: 
                 db.set_hashes(v.id, quick_hash=quick_hash(v.path))
         except OSError:
             continue  # 지금 읽을 수 없는 파일: 다음 스캔 때 다시
+        if v.info_tried:  # 지문은 예전에 만들었고 비교용 그림만 없다
+            pictures = fp.thumbs_only(v.path, v.duration or 0, ffmpeg)
+            if os.path.exists(v.path):
+                db.set_thumbs(v.id, pictures)
+                done += 1
+            continue
         info = fp.probe(v.path, ffmpeg) if ffmpeg else fp.MediaInfo()
-        mark = fp.fingerprint(v.path, info.duration, ffmpeg) if info.duration > 0 else None
+        mark, pictures = (fp.fingerprint_with_thumbs(v.path, info.duration, ffmpeg) if info.duration > 0
+                          else (None, []))
         if not os.path.exists(v.path):
             continue  # 도중에 드라이브가 뽑힘
         db.set_media_info(v.id, info.duration, info.width, info.height, mark)
+        db.set_thumbs(v.id, pictures)
         done += 1
     return done

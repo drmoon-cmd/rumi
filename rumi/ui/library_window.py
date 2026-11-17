@@ -5,12 +5,12 @@ from __future__ import annotations
 import os
 import time
 
-from PySide6.QtCore import QAbstractTableModel, QModelIndex, Qt, Signal
-from PySide6.QtGui import QBrush, QColor
+from PySide6.QtCore import QAbstractTableModel, QModelIndex, Qt, QTimer, Signal
+from PySide6.QtGui import QBrush, QColor, QPixmap
 from PySide6.QtWidgets import (
-    QAbstractItemView, QCheckBox, QDialog, QDialogButtonBox, QFileDialog, QHBoxLayout,
+    QAbstractItemView, QCheckBox, QDialog, QDialogButtonBox, QFileDialog, QFrame, QGridLayout, QHBoxLayout,
     QHeaderView, QInputDialog, QLabel, QLineEdit, QListWidget, QListWidgetItem, QMenu, QMessageBox,
-    QPushButton, QSplitter, QTableView, QTableWidget, QTableWidgetItem, QTabWidget, QTreeWidget,
+    QPushButton, QScrollArea, QSplitter, QTableView, QToolButton, QTableWidget, QTableWidgetItem, QTabWidget, QTreeWidget,
     QTreeWidgetItem, QVBoxLayout, QWidget,
 )
 
@@ -86,6 +86,62 @@ def _left(seconds: float) -> str:
     if seconds < 5400:
         return f"약 {seconds / 60:.0f}분"
     return f"약 {seconds / 3600:.1f}시간"
+
+
+class ComparePane(QScrollArea):
+    """고른 중복 그룹의 영상들을 장면 그림으로 나란히 보여 준다 (스캔 때 저장해 둔 그림이라
+    뽑아 둔 드라이브의 영상도 보인다). 지우기 전에 정말 같은 영상인지 눈으로 확인하는 용도."""
+
+    THUMB_H = 84
+
+    def __init__(self, parent=None):
+        super().__init__(parent)
+        self.setWidgetResizable(True)
+        self.setFrameShape(QFrame.StyledPanel)
+        self.setMinimumHeight(200)
+        self.show_message("위 목록에서 그룹이나 파일을 고르면 장면을 나란히 비교합니다.")
+
+    def show_message(self, text: str) -> None:
+        label = QLabel(text)
+        label.setAlignment(Qt.AlignCenter)
+        label.setWordWrap(True)
+        label.setEnabled(False)
+        self.setWidget(label)
+
+    def show_group(self, rows: list[dict]) -> None:
+        """rows: {title, detail, tag, tag_color, thumbs(JPEG 목록), dim}"""
+        box = QWidget()
+        grid = QGridLayout(box)
+        grid.setContentsMargins(8, 6, 8, 6)
+        grid.setHorizontalSpacing(8)
+        grid.setVerticalSpacing(6)
+        for r, row in enumerate(rows):
+            tag = f" <span style='color:{row['tag_color']}'><b>[{row['tag']}]</b></span>" if row.get("tag") else ""
+            text = QLabel(f"<b>{row['title']}</b>{tag}<br><span style='color:#8a8f98'>{row['detail']}</span>")
+            text.setTextFormat(Qt.RichText)
+            text.setWordWrap(True)
+            text.setMinimumWidth(240)
+            text.setTextInteractionFlags(Qt.TextSelectableByMouse)
+            grid.addWidget(text, r, 0)
+            thumbs = row.get("thumbs") or []
+            if not any(thumbs):
+                none = QLabel("비교용 그림 없음 — 이 드라이브를 연결하고 ‘다시 스캔’하면 만들어집니다")
+                none.setEnabled(False)
+                grid.addWidget(none, r, 1, 1, 3)
+                continue
+            for c, data in enumerate(thumbs[:3]):
+                pic = QLabel()
+                pm = QPixmap()
+                if data and pm.loadFromData(data):
+                    pic.setPixmap(pm.scaledToHeight(self.THUMB_H, Qt.SmoothTransformation))
+                else:
+                    pic.setText("—")
+                    pic.setAlignment(Qt.AlignCenter)
+                    pic.setFixedSize(int(self.THUMB_H * 16 / 9), self.THUMB_H)
+                grid.addWidget(pic, r, c + 1)
+        grid.setColumnStretch(0, 1)
+        grid.setRowStretch(len(rows), 1)
+        self.setWidget(box)
 
 
 class DriveDialog(QDialog):
@@ -300,6 +356,7 @@ class LibraryWindow(QWidget):
         self._groups: list[DuplicateGroup] = []
         self._volumes: dict = {}
         self._shown = False
+        self._plan_rows: list = []
         self._worker = None
 
         # 폴더 목록
@@ -340,14 +397,35 @@ class LibraryWindow(QWidget):
         self.tabs.addTab(self._build_videos_tab(), "동영상")
         self.tabs.addTab(self._build_dupes_tab(), "중복 정리")
         self.tabs.addTab(self._build_trash_tab(), "정리함")
+        self.tabs.addTab(self._build_plan_tab(), "드라이브별 정리 계획")
 
         split = QSplitter()
         split.addWidget(left)
         split.addWidget(self.tabs)
         split.setStretchFactor(1, 1)
         split.setSizes([330, 870])
+        # 정리할 파일이 있는 드라이브가 연결되면 알려 주는 줄
+        self.banner = QFrame()
+        self.banner.setFrameShape(QFrame.StyledPanel)
+        self.banner_label = QLabel()
+        self.banner_label.setWordWrap(True)
+        banner_btn = QPushButton("정리 계획 보기")
+        banner_btn.clicked.connect(lambda: self.tabs.setCurrentIndex(3))
+        bl = QHBoxLayout(self.banner)
+        bl.setContentsMargins(10, 6, 10, 6)
+        bl.addWidget(self.banner_label, 1)
+        bl.addWidget(banner_btn)
+        self.banner.hide()
+
         lay = QVBoxLayout(self)
-        lay.addWidget(split)
+        lay.addWidget(self.banner)
+        lay.addWidget(split, 1)
+
+        # 드라이브를 꽂거나 뽑으면 목록을 새로 본다 (창이 보일 때만)
+        self._mounts_seen = vol.mount_signature()
+        self._mount_timer = QTimer(self, interval=3000)
+        self._mount_timer.timeout.connect(self._check_mounts)
+        self._mount_timer.start()
 
         self.refresh()
 
@@ -475,11 +553,27 @@ class LibraryWindow(QWidget):
         h.resizeSection(0, 300)
         self.tree.itemDoubleClicked.connect(self._dupe_double_clicked)
         self.tree.itemChanged.connect(self._update_dupe_selection_label)
+        self.tree.itemChanged.connect(lambda *_: self._show_compare())
+        self.tree.currentItemChanged.connect(lambda *_: self._show_compare())
+        self.compare = ComparePane()
+        self.dupe_split = QSplitter(Qt.Vertical)
+        self.dupe_split.addWidget(self.tree)
+        self.dupe_split.addWidget(self.compare)
+        self.dupe_split.setStretchFactor(0, 1)
+        self.dupe_split.setStretchFactor(1, 1)
+        self.dupe_split.setSizes([300, 300])
         self.tree.setContextMenuPolicy(Qt.CustomContextMenu)
         self.tree.customContextMenuRequested.connect(self._dupe_menu)
 
         suggest = QPushButton("추천대로 선택")
         suggest.clicked.connect(self._apply_suggestion)
+        by_drive = QToolButton()
+        by_drive.setText("드라이브 기준 선택 ▾")
+        by_drive.setToolTip("어느 드라이브의 사본을 지우고 어느 드라이브의 사본을 남길지 한 번에 고릅니다")
+        by_drive.setPopupMode(QToolButton.InstantPopup)
+        drive_menu = QMenu(by_drive)
+        drive_menu.aboutToShow.connect(lambda: self._build_drive_menu(drive_menu))
+        by_drive.setMenu(drive_menu)
         none = QPushButton("모두 해제")
         none.clicked.connect(lambda: self._set_all_checks(False))
         self.dupe_sel_label = QLabel()
@@ -494,6 +588,7 @@ class LibraryWindow(QWidget):
         top.addWidget(self.dupes_summary, 1)
         bottom = QHBoxLayout()
         bottom.addWidget(suggest)
+        bottom.addWidget(by_drive)
         bottom.addWidget(none)
         bottom.addWidget(self.dupe_sel_label, 1)
         bottom.addWidget(mark)
@@ -503,7 +598,7 @@ class LibraryWindow(QWidget):
         lay = QVBoxLayout(w)
         lay.addLayout(top)
         lay.addWidget(help_)
-        lay.addWidget(self.tree, 1)
+        lay.addWidget(self.dupe_split, 1)
         lay.addLayout(bottom)
         return w
 
@@ -562,7 +657,7 @@ class LibraryWindow(QWidget):
         wasted = sum(g.wasted_bytes for g in groups)
         n_similar = sum(g.kind == "similar" for g in groups)
         todo = len(self.db.videos_missing_info())
-        note = f" · 아직 지문이 없는 파일 {todo}개 (드라이브를 연결하고 ‘다시 스캔’)" if todo else ""
+        note = f" · 지문이나 비교용 그림이 없는 파일 {todo}개 (드라이브를 연결하고 ‘다시 스캔’)" if todo else ""
         self.dupes_summary.setText(
             (f"중복 그룹 {len(groups)}개 (내용 동일 {len(groups) - n_similar} · 화질만 다름 {n_similar}) · "
              f"정리 시 최대 {fmt_size(wasted)} 확보" if groups else "중복된 동영상이 없습니다.") + note)
@@ -610,6 +705,73 @@ class LibraryWindow(QWidget):
                 if k.checkState(0) == Qt.Checked:
                     keep[k.data(0, ID_ROLE)] = keeper
         return keep
+
+    # ---- 장면 나란히 보기
+    def _show_compare(self) -> None:
+        item = self.tree.currentItem()
+        if item is None:
+            return self.compare.show_message("위 목록에서 그룹이나 파일을 고르면 장면을 나란히 비교합니다.")
+        top = item.parent() or item
+        gi = self.tree.indexOfTopLevelItem(top)
+        if not (0 <= gi < len(self._groups)):
+            return
+        checked = {top.child(j).data(0, ID_ROLE): top.child(j).checkState(0) == Qt.Checked
+                   for j in range(top.childCount())}
+        rows = []
+        for v in self._groups[gi].videos:
+            on = self._online(v)
+            rate = f" · {v.size * 8 / v.duration / 1e6:.1f} Mbps" if v.duration else ""
+            detail = " · ".join(x for x in (
+                self._drive_name(v) + ("" if on else f" ({OFFLINE_LABEL})"), v.folder, _resolution(v),
+                fmt_size(v.size) + rate, fmt_time(v.duration) if v.duration else "") if x)
+            rows.append({"title": v.name, "detail": detail, "thumbs": self.db.thumbs(v.id),
+                         "tag": "정리 대상" if checked.get(v.id) else "남김",
+                         "tag_color": "#c0392b" if checked.get(v.id) else "#2e9e5b"})
+        self.compare.show_group(rows)
+
+    # ---- 드라이브 기준으로 고르기
+    def _build_drive_menu(self, menu: QMenu) -> None:
+        menu.clear()
+        ids = sorted({v.volume_id for g in self._groups for v in g.videos if v.volume_id is not None},
+                     key=lambda i: self._volumes[i].name.lower() if i in self._volumes else "")
+        if not ids:
+            menu.addAction("(먼저 ‘중복 찾기’를 눌러 주세요)").setEnabled(False)
+            return
+        clear = menu.addMenu("이 드라이브의 사본을 정리 대상으로 (다른 곳에 사본이 있을 때만)")
+        keep = menu.addMenu("이 드라이브의 사본을 남기고 나머지를 정리 대상으로")
+        for i in ids:
+            volume = self._volumes.get(i)
+            name = (volume.name if volume else "?") + ("" if volume and volume.online else f"  ({OFFLINE_LABEL})")
+            clear.addAction(name, lambda i=i: self._select_by_drive(i, keep=False))
+            keep.addAction(name, lambda i=i: self._select_by_drive(i, keep=True))
+
+    def _select_by_drive(self, volume_id: int, keep: bool) -> None:
+        """그룹마다: 이 드라이브의 사본을 정리 대상으로(keep=False) 또는 이 드라이브의 사본만 남기기(keep=True).
+        그 드라이브에 사본이 없는 그룹, 그 드라이브에만 사본이 있는 그룹은 건드리지 않는다."""
+        self.tree.blockSignals(True)
+        changed = 0
+        for gi, (_top, kids) in enumerate(self._children()):
+            if gi >= len(self._groups):
+                continue
+            on_drive = {v.id for v in self._groups[gi].videos if v.volume_id == volume_id}
+            if not on_drive or len(on_drive) == len(kids):
+                continue
+            for k in kids:
+                here = k.data(0, ID_ROLE) in on_drive
+                k.setCheckState(0, Qt.Checked if here != keep else Qt.Unchecked)
+            if keep and len(on_drive) > 1:
+                # 그 드라이브 안에도 사본이 여럿이면 추천 기준으로 하나만 남긴다
+                best = min((v for v in self._groups[gi].videos if v.id in on_drive),
+                           key=lambda v: (v.status != VideoStatus.ACTIVE, -(v.width or 0) * (v.height or 0),
+                                          -v.size, v.mtime, v.path)).id
+                for k in kids:
+                    if k.data(0, ID_ROLE) in on_drive:
+                        k.setCheckState(0, Qt.Unchecked if k.data(0, ID_ROLE) == best else Qt.Checked)
+            changed += 1
+        self.tree.blockSignals(False)
+        self._update_dupe_selection_label()
+        self._show_compare()
+        self.dupes_summary.setText(f"{changed}개 그룹의 선택을 바꿨습니다. 확인한 뒤 ‘표시만 하기’를 누르면 정리 계획에 올라갑니다.")
 
     def _update_dupe_selection_label(self, *_):
         ids, size, _ = self._checked()
@@ -742,6 +904,9 @@ class LibraryWindow(QWidget):
         if not ids:
             QMessageBox.information(self, "영구 삭제", "삭제할 항목을 선택해 주세요.")
             return
+        self._purge_ids(ids)
+
+    def _purge_ids(self, ids: list[int]) -> None:
 
         def job(worker):
             return self.org.check_purge(
@@ -759,6 +924,116 @@ class LibraryWindow(QWidget):
                     QMessageBox.information(self, "영구 삭제", f"{len(res.done)}개 파일을 삭제했습니다.")
 
         self._worker = run_with_progress(self, "삭제 전 확인 중", job, confirm, self._error)
+
+    # ================= 드라이브별 정리 계획 =================
+    def _build_plan_tab(self) -> QWidget:
+        help_ = QLabel(
+            "중복 정리에서 ‘표시만 하기’로 올려 둔 파일을 드라이브별로 모아 보여 줍니다. 드라이브를 한 번에 연결하지 "
+            "못해도, 미리 표시해 두었다가 그 드라이브를 꽂았을 때 한 번에 처리할 수 있습니다.<br>"
+            "‘정리 실행’을 누르면 남길 사본을 다시 확인한 뒤 삭제 확인 창을 보여 줍니다. "
+            "남길 사본이 뽑아 둔 드라이브에 있는 파일은 따로 동의해야만 지웁니다.")
+        help_.setWordWrap(True)
+        self.plan = _table(["드라이브", "상태", "정리 대기", "확보 용량", "마지막 연결"])
+        self.plan.setSelectionMode(QAbstractItemView.SingleSelection)
+        self.plan.itemSelectionChanged.connect(self._update_plan_buttons)
+        self.plan.itemDoubleClicked.connect(lambda _it: self._plan_show_in_trash())
+        self.plan_run = QPushButton("이 드라이브 정리 실행…")
+        self.plan_run.setStyleSheet("font-weight: bold;")
+        self.plan_run.clicked.connect(self._plan_run)
+        self.plan_show = QPushButton("정리함에서 보기")
+        self.plan_show.clicked.connect(self._plan_show_in_trash)
+        self.plan_summary = QLabel()
+        row = QHBoxLayout()
+        row.addWidget(self.plan_summary, 1)
+        row.addWidget(self.plan_show)
+        row.addWidget(self.plan_run)
+        w = QWidget()
+        lay = QVBoxLayout(w)
+        lay.addWidget(help_)
+        lay.addWidget(self.plan, 1)
+        lay.addLayout(row)
+        return w
+
+    def _fill_plan(self) -> None:
+        self._plan_rows = self.org.plan()
+        t = self.plan
+        t.setSortingEnabled(False)
+        t.setRowCount(0)
+        t.setRowCount(len(self._plan_rows))
+        for r, row in enumerate(self._plan_rows):
+            cells = [_cell(row.name), _cell("연결됨" if row.online else OFFLINE_LABEL),
+                     _cell(f"{len(row.ids)}개", len(row.ids)), _cell(fmt_size(row.size), row.size),
+                     _cell(fmt_date(row.last_seen), row.last_seen or 0)]
+            cells[0].setData(ID_ROLE, r)
+            for c, cell in enumerate(cells):
+                if not row.online:
+                    cell.setForeground(QBrush(OFFLINE_COLOR))
+                t.setItem(r, c, cell)
+        t.setSortingEnabled(True)
+        ready = [row for row in self._plan_rows if row.online]
+        total = sum(row.size for row in self._plan_rows)
+        self.plan_summary.setText(
+            f"정리 대기 {sum(len(r.ids) for r in self._plan_rows)}개 · {fmt_size(total)} · 드라이브 {len(self._plan_rows)}개"
+            if self._plan_rows else "정리 대기 중인 파일이 없습니다. 중복 정리에서 ‘표시만 하기’를 누르면 여기에 모입니다.")
+        self.tabs.setTabText(3, f"드라이브별 정리 계획 ({len(self._plan_rows)})" if self._plan_rows
+                             else "드라이브별 정리 계획")
+        if ready:
+            self.banner_label.setText(
+                "<b>지금 연결된 드라이브에 정리 대기 파일이 있습니다:</b> "
+                + ", ".join(f"{r.name} {len(r.ids)}개 ({fmt_size(r.size)})" for r in ready[:4])
+                + (" …" if len(ready) > 4 else ""))
+        self.banner.setVisible(bool(ready))
+        self._update_plan_buttons()
+
+    def _plan_current(self):
+        rows = sorted({i.row() for i in self.plan.selectedIndexes()})
+        if not rows:
+            return None
+        index = self.plan.item(rows[0], 0).data(ID_ROLE)
+        return self._plan_rows[index] if 0 <= index < len(self._plan_rows) else None
+
+    def _update_plan_buttons(self) -> None:
+        row = self._plan_current()
+        self.plan_show.setEnabled(row is not None)
+        self.plan_run.setEnabled(row is not None and row.online)
+        self.plan_run.setToolTip("" if row is None or row.online else "이 드라이브를 연결하면 실행할 수 있습니다")
+
+    def _plan_run(self) -> None:
+        row = self._plan_current()
+        if row is not None and row.online:
+            self._purge_ids(list(row.ids))
+
+    def _plan_show_in_trash(self) -> None:
+        row = self._plan_current()
+        if row is None:
+            return
+        wanted = set(row.ids)
+        self.tabs.setCurrentIndex(2)
+        self.trash.clearSelection()
+        mode = self.trash.selectionMode()
+        self.trash.setSelectionMode(QAbstractItemView.MultiSelection)
+        first = None
+        for r in range(self.trash.rowCount()):
+            if self.trash.item(r, 0).data(ID_ROLE) in wanted:
+                self.trash.selectRow(r)
+                first = r if first is None else first
+        self.trash.setSelectionMode(mode)
+        if first is not None:
+            self.trash.scrollToItem(self.trash.item(first, 0))
+
+    def _check_mounts(self) -> None:
+        if not self.isVisible() or (self._worker is not None and self._worker_running()):
+            return
+        now = vol.mount_signature()
+        if now != self._mounts_seen:
+            self._mounts_seen = now
+            self.refresh()
+
+    def _worker_running(self) -> bool:
+        try:
+            return self._worker.isRunning()
+        except RuntimeError:   # 이미 정리된 작업
+            return False
 
     # ================= 공통 =================
     def _do(self, fn, ids: list[int], label: str) -> None:
@@ -803,6 +1078,7 @@ class LibraryWindow(QWidget):
                if todo_online else ""))
         self._fill_videos()
         self._fill_trash()
+        self._fill_plan()
 
     def showEvent(self, e):
         super().showEvent(e)

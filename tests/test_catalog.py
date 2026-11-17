@@ -326,3 +326,51 @@ def test_real_drive_of_this_folder(tmp_path):
     v = db.videos()[0]
     assert db.is_online(v) and os.path.exists(v.path) and v.rel_path.endswith("x.mp4")
     db.close()
+
+
+@needs_ffmpeg
+def test_thumbnails_are_kept_for_unplugged_drives_and_added_to_old_records(db, drives):
+    root = drives.plug("AAAA-0001", "E")
+    make_video(os.path.join(root, "ok.mp4"), seed=1)
+    fid = add_and_scan(db, root)
+    v = db.videos()[0]
+    pictures = db.thumbs(v.id)
+    assert len(pictures) == 3 and all(p[:2] == b"\xff\xd8" for p in pictures)   # JPEG 3장
+    mark = v.fingerprint
+    # 예전 판에서 지문만 만들어 둔 기록: 다시 스캔하면 지문은 그대로 두고 그림만 채운다
+    db._exec("DELETE FROM thumbs")
+    db._exec("UPDATE videos SET thumbs_tried=0")
+    assert len(db.videos_missing_info()) == 1
+    assert build_catalog(db, [fid]) == 1
+    assert len(db.thumbs(v.id)) == 3 and db.videos()[0].fingerprint == mark
+    assert build_catalog(db, [fid]) == 0
+    # 드라이브를 뽑아도 그림은 남는다
+    drives.unplug("AAAA-0001", keep_files_as="away")
+    db.refresh_volumes()
+    assert len(db.thumbs(v.id)) == 3
+    db.delete_video(v.id)
+    assert db.thumbs(v.id) == []
+
+
+def test_plan_groups_marked_files_by_drive(db, drives):
+    data = os.urandom(2 * 1024 * 1024)
+    root = drives.plug("AAAA-0001", "E")
+    put(root, "movie.mp4", data)
+    add_and_scan(db, root)
+    drives.unplug("AAAA-0001", keep_files_as="A_away")
+    root = drives.plug("BBBB-0002", "E")
+    put(root, "copy.mp4", data)
+    put(root, "copy2.mp4", data)
+    add_and_scan(db, root)
+    org = Organizer(db)
+    assert org.plan() == []
+    by_name = {v.name: v for v in db.videos()}
+    # 뽑아 둔 드라이브의 파일도 미리 표시해 둘 수 있다
+    org.mark([by_name["movie.mp4"].id, by_name["copy2.mp4"].id], keep={})
+    plan = org.plan()
+    assert [(row.online, len(row.ids), row.size) for row in plan] == [(True, 1, len(data)), (False, 1, len(data))]
+    # 연결된 드라이브 것만 실행
+    checks = org.check_purge(plan[0].ids)
+    assert checks[0].ok and not checks[0].offline_keeper      # 같은 드라이브에 copy.mp4 가 남는다
+    assert org.purge(checks).done == plan[0].ids
+    assert [(row.online, len(row.ids)) for row in org.plan()] == [(False, 1)]

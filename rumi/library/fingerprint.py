@@ -11,8 +11,10 @@ ffmpeg 만 쓴다 (설치판에 들어 있다). 길이·해상도를 읽고, 장
 from __future__ import annotations
 
 import math
+import os
 import re
 import subprocess
+import tempfile
 from concurrent.futures import ThreadPoolExecutor
 from dataclasses import dataclass
 
@@ -28,6 +30,9 @@ MIN_FRAMES = 4           # 비교할 수 있는 장면이 이보다 적으면 �
 MATCH_RATIO = 0.7        # 비교한 장면 중 이 비율 이상이 같아야 같은 영상
 DURATION_TOLERANCE = 2.0  # 길이 차이 허용 (초)
 TIMEOUT_S = 90
+THUMB_FRAMES = (1, 4, 7)   # 그림으로도 남기는 장면 (길이의 15%, 45%, 75% 지점)
+THUMB_FILTER = "scale=160:-2"
+THUMB_CODEC = ["-c:v", "mjpeg", "-q:v", "7", "-pix_fmt", "yuvj420p"]
 WORKERS = 4             # 한 파일에서 장면을 동시에 뽑는 수
 
 _NO_WINDOW = getattr(subprocess, "CREATE_NO_WINDOW", 0)
@@ -80,14 +85,42 @@ def dhash(gray: bytes) -> int | None:
     return value
 
 
-def _grab_one(ffmpeg: str, path: str, t: float) -> bytes:
-    cmd = [ffmpeg, "-v", "error", "-nostdin", *ffmpeg_input_guard(), "-ss", f"{t:.3f}", "-i", path, "-map", "0:v:0", "-frames:v", "1",
-           "-vf", f"scale={GRID_W}:{GRID_H}:flags=area,format=gray", "-an", "-sn", "-dn", "-f", "rawvideo", "-"]
+def _grab_one(ffmpeg: str, path: str, t: float, thumb_path: str | None = None) -> bytes:
+    """t 초 지점의 장면을 9×8 흑백으로. thumb_path 를 주면 같은 장면의 작은 그림(JPEG)도 그 파일로 쓴다
+    (ffmpeg 를 한 번만 실행해 둘 다 얻는다)."""
+    cmd = [ffmpeg, "-v", "error", "-nostdin", *ffmpeg_input_guard(), "-ss", f"{t:.3f}", "-i", path]
+    small = f"scale={GRID_W}:{GRID_H}:flags=area,format=gray"
+    if thumb_path:
+        cmd += ["-filter_complex", f"[0:v:0]split=2[a][b];[a]{small}[h];[b]{THUMB_FILTER}[t]",
+                "-map", "[h]", "-frames:v", "1", "-an", "-sn", "-dn", "-f", "rawvideo", "-",
+                "-map", "[t]", "-frames:v", "1", "-an", "-sn", "-dn", *THUMB_CODEC, "-f", "image2", "-y", thumb_path]
+    else:
+        cmd += ["-map", "0:v:0", "-frames:v", "1", "-vf", small, "-an", "-sn", "-dn", "-f", "rawvideo", "-"]
     try:
         r = subprocess.run(cmd, capture_output=True, timeout=TIMEOUT_S, creationflags=_NO_WINDOW)
     except (OSError, subprocess.SubprocessError):
         return b""
     return r.stdout[:GRID_W * GRID_H]
+
+
+def grab_thumb(ffmpeg: str, path: str, t: float) -> bytes:
+    """t 초 지점의 작은 그림(JPEG)만. 지문은 이미 있고 그림만 없는 파일용."""
+    cmd = [ffmpeg, "-v", "error", "-nostdin", *ffmpeg_input_guard(), "-ss", f"{t:.3f}", "-i", path, "-map", "0:v:0",
+           "-frames:v", "1", "-vf", THUMB_FILTER, "-an", "-sn", "-dn", *THUMB_CODEC, "-f", "image2pipe", "-"]
+    try:
+        r = subprocess.run(cmd, capture_output=True, timeout=TIMEOUT_S, creationflags=_NO_WINDOW)
+    except (OSError, subprocess.SubprocessError):
+        return b""
+    return r.stdout if r.stdout[:2] == b"\xff\xd8" else b""
+
+
+def thumbs_only(path: str, duration: float, ffmpeg: str | None = None) -> list[bytes]:
+    ffmpeg = ffmpeg or find_ffmpeg()
+    if not ffmpeg or duration <= 0:
+        return []
+    times = positions(duration)
+    with ThreadPoolExecutor(max_workers=WORKERS) as pool:
+        return list(pool.map(lambda i: grab_thumb(ffmpeg, path, times[i]), THUMB_FRAMES))
 
 
 def encode(hashes: list[int | None]) -> str:
@@ -115,15 +148,33 @@ def usable(text: str | None) -> bool:
 
 def fingerprint(path: str, duration: float, ffmpeg: str | None = None) -> str | None:
     """영상의 장면 지문. 만들 수 없으면 None (길이를 모르거나 영상이 아닌 파일)."""
+    return fingerprint_with_thumbs(path, duration, ffmpeg, thumbs=False)[0]
+
+
+def fingerprint_with_thumbs(path: str, duration: float, ffmpeg: str | None = None,
+                            thumbs: bool = True) -> tuple[str | None, list[bytes]]:
+    """(장면 지문, 작은 그림 3장). 그림은 지문을 뽑는 장면 중 3곳(THUMB_FRAMES)을 그대로 쓴다:
+    뽑아 둔 드라이브의 영상도 지우기 전에 눈으로 비교할 수 있게 하기 위한 것."""
     ffmpeg = ffmpeg or find_ffmpeg()
     if not ffmpeg or duration <= 0:
-        return None
-    with ThreadPoolExecutor(max_workers=WORKERS) as pool:
-        frames = list(pool.map(lambda t: _grab_one(ffmpeg, path, t), positions(duration)))
+        return None, []
+    times = positions(duration)
+    with tempfile.TemporaryDirectory(prefix="rumi_fp_") as tmp:
+        targets = {i: os.path.join(tmp, f"{i}.jpg") for i in THUMB_FRAMES} if thumbs else {}
+        with ThreadPoolExecutor(max_workers=WORKERS) as pool:
+            frames = list(pool.map(lambda i: _grab_one(ffmpeg, path, times[i], targets.get(i)), range(FRAMES)))
+        pictures = []
+        for i in THUMB_FRAMES if thumbs else ():
+            try:
+                with open(targets[i], "rb") as f:
+                    data = f.read()
+            except OSError:
+                data = b""
+            pictures.append(data if data[:2] == b"\xff\xd8" else b"")
     hashes = [dhash(f) for f in frames]
     if all(h is None for h in hashes):
-        return None
-    return encode(hashes)
+        return None, pictures
+    return encode(hashes), pictures
 
 
 def matches(a: list[int | None], b: list[int | None]) -> bool:

@@ -8,6 +8,7 @@ from __future__ import annotations
 
 import os
 import shutil
+import time
 from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Callable
@@ -24,6 +25,16 @@ ProgressFn = Callable[[int, int], None]
 class OpResult:
     done: list[int] = field(default_factory=list)
     errors: list[tuple[Video, str]] = field(default_factory=list)
+
+
+@dataclass
+class PlanRow:
+    volume_id: int | None
+    name: str
+    online: bool
+    last_seen: float | None
+    ids: list[int] = field(default_factory=list)
+    size: int = 0
 
 
 @dataclass
@@ -60,7 +71,26 @@ class Organizer:
     def _label(self, v: Video) -> str:
         """어느 드라이브의 어느 파일인지 (연결되지 않은 드라이브의 파일을 가리킬 때)."""
         volume = self.db.volume(v.volume_id)
-        return f"드라이브 '{volume.name}' 의 {v.rel_path}" if volume and v.rel_path is not None else v.path
+        if not volume or v.rel_path is None:
+            return v.path
+        seen = time.strftime("%Y-%m-%d", time.localtime(volume.last_seen)) if volume.last_seen else "기록 없음"
+        return f"드라이브 '{volume.name}' 의 {v.rel_path} (마지막 연결 {seen})"
+
+    def plan(self) -> list["PlanRow"]:
+        """드라이브별 정리 계획: 정리 대상으로 표시해 둔 파일이 드라이브마다 몇 개, 얼마나 되는지."""
+        self.db.refresh_volumes()
+        volumes = self.db.volumes()
+        rows: dict[int | None, PlanRow] = {}
+        for v in self.db.videos([VideoStatus.MARKED, VideoStatus.QUARANTINED]):
+            row = rows.get(v.volume_id)
+            if row is None:
+                volume = volumes.get(v.volume_id)
+                row = rows[v.volume_id] = PlanRow(
+                    v.volume_id, volume.name if volume else "(드라이브 정보 없음)",
+                    volume.online if volume else self.db.is_online(v), volume.last_seen if volume else None)
+            row.ids.append(v.id)
+            row.size += v.size
+        return sorted(rows.values(), key=lambda r: (not r.online, -r.size))
 
     def mark(self, ids: list[int], keep: dict[int, int] | None = None) -> OpResult:
         """keep: 정리 대상 → 남기기로 한 사본 (중복 정리 화면에서 고른 것). 영구 삭제 전에 그 사본을 확인한다."""

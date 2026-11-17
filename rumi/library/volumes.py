@@ -149,6 +149,17 @@ def current_mounts() -> list[Mount]:
     return [m for m in (_posix_mount(p, uuids) for p in _posix_mount_points()) if m]
 
 
+def mount_signature() -> tuple:
+    """드라이브를 꽂거나 뽑았는지 알아채기 위한 값. 드라이브를 깨우지 않도록 이름표는 읽지 않는다."""
+    try:
+        if sys.platform == "win32":
+            import ctypes
+            return (ctypes.windll.kernel32.GetLogicalDrives(),)
+        return tuple(_posix_mount_points())
+    except Exception:
+        return ()
+
+
 def mount_of(path: str) -> Mount | None:
     """이 경로가 들어 있는 드라이브. 알 수 없으면 None."""
     try:

@@ -68,6 +68,7 @@ class Video:
     height: int | None = None
     fingerprint: str | None = None   # 장면 지문 (rumi.library.fingerprint)
     keep_id: int | None = None       # 정리 대상으로 표시할 때 '남기기로 한 사본'
+    info_tried: bool = False         # 길이·지문을 만들어 봤는가
 
     @property
     def name(self) -> str:
@@ -91,7 +92,7 @@ class Video:
             status_changed_at=row["status_changed_at"],
             volume_id=row["volume_id"], rel_path=row["rel_path"], duration=row["duration"],
             width=row["width"], height=row["height"], fingerprint=row["fingerprint"],
-            keep_id=row["keep_id"],
+            keep_id=row["keep_id"], info_tried=bool(row["info_tried"]),
         )
 
 
@@ -122,6 +123,12 @@ CREATE TABLE IF NOT EXISTS volumes (
     last_mount TEXT NOT NULL DEFAULT '',
     last_seen  REAL
 );
+CREATE TABLE IF NOT EXISTS thumbs (
+    video_id INTEGER NOT NULL,
+    idx      INTEGER NOT NULL,
+    jpeg     BLOB NOT NULL,
+    PRIMARY KEY (video_id, idx)
+);
 CREATE TABLE IF NOT EXISTS bookmarks (
     id       INTEGER PRIMARY KEY,
     path     TEXT NOT NULL,
@@ -145,7 +152,7 @@ _NEW_COLUMNS = [
     ("videos", "volume_id", "INTEGER"), ("videos", "rel_path", "TEXT"), ("videos", "original_rel", "TEXT"),
     ("videos", "duration", "REAL"), ("videos", "width", "INTEGER"), ("videos", "height", "INTEGER"),
     ("videos", "fingerprint", "TEXT"), ("videos", "info_tried", "INTEGER NOT NULL DEFAULT 0"),
-    ("videos", "keep_id", "INTEGER"),
+    ("videos", "keep_id", "INTEGER"), ("videos", "thumbs_tried", "INTEGER NOT NULL DEFAULT 0"),
 ]
 
 
@@ -313,6 +320,7 @@ class LibraryDB:
         self._exec(
             "DELETE FROM videos WHERE folder_id = ? AND status = 'active'", (folder_id,))
         self._exec("DELETE FROM folders WHERE id = ?", (folder_id,))
+        self._exec("DELETE FROM thumbs WHERE video_id NOT IN (SELECT id FROM videos)")
         self._exec("DELETE FROM volumes WHERE id NOT IN (SELECT volume_id FROM folders WHERE volume_id IS NOT NULL)"
                    " AND id NOT IN (SELECT volume_id FROM videos WHERE volume_id IS NOT NULL)")
 
@@ -325,7 +333,7 @@ class LibraryDB:
             "SELECT f.id, f.path, f.volume_id, f.rel_path, f.scanned_at, "
             "(SELECT COUNT(*) FROM videos v WHERE v.folder_id = f.id AND v.status='active') AS n, "
             "(SELECT COUNT(*) FROM videos v WHERE v.folder_id = f.id AND v.status='active' "
-            " AND v.info_tried = 0) AS todo "
+            " AND (v.info_tried = 0 OR (v.thumbs_tried = 0 AND v.duration > 0))) AS todo "
             "FROM folders f ORDER BY f.path")
 
     def folder_path(self, folder_id: int) -> str | None:
@@ -372,8 +380,9 @@ class LibraryDB:
         if row["size"] != size or row["mtime"] != mtime:
             self._exec(
                 "UPDATE videos SET size=?, mtime=?, quick_hash=NULL, full_hash=NULL, duration=NULL, width=NULL,"
-                " height=NULL, fingerprint=NULL, info_tried=0, folder_id=?, volume_id=?, rel_path=? WHERE id=?",
-                (size, mtime, folder_id, volume_id, rel, row["id"]))
+                " height=NULL, fingerprint=NULL, info_tried=0, thumbs_tried=0, folder_id=?, volume_id=?, rel_path=?"
+                " WHERE id=?", (size, mtime, folder_id, volume_id, rel, row["id"]))
+            self._exec("DELETE FROM thumbs WHERE video_id=?", (row["id"],))
         else:
             self._exec("UPDATE videos SET folder_id=?, volume_id=?, rel_path=? WHERE id=?",
                        (folder_id, volume_id, rel, row["id"]))
@@ -409,13 +418,27 @@ class LibraryDB:
                    (duration or None, width or None, height or None, fingerprint, video_id))
 
     def videos_missing_info(self, folder_ids: Iterable[int] | None = None) -> list[Video]:
-        """아직 지문을 만들어 보지 않은 파일."""
-        sql, params = "SELECT * FROM videos WHERE info_tried = 0 AND status != 'quarantined'", []
+        """아직 지문을 만들어 보지 않았거나, 지문은 있는데 비교용 그림이 없는 파일."""
+        sql, params = ("SELECT * FROM videos WHERE (info_tried = 0 OR (thumbs_tried = 0 AND duration > 0))"
+                       " AND status != 'quarantined'"), []
         if folder_ids is not None:
             ids = list(folder_ids)
             sql += f" AND folder_id IN ({','.join('?' * len(ids))})"
             params += ids
         return [Video.from_row(r) for r in self._query(sql + " ORDER BY path", params)]
+
+    def set_thumbs(self, video_id: int, pictures: list[bytes]) -> None:
+        """비교용 작은 그림(JPEG)을 적는다. 못 만든 경우도 '해 봤음'으로 적는다."""
+        with self.batch():
+            self._exec("DELETE FROM thumbs WHERE video_id=?", (video_id,))
+            for i, data in enumerate(pictures):
+                if data:
+                    self._exec("INSERT INTO thumbs(video_id, idx, jpeg) VALUES (?, ?, ?)", (video_id, i, data))
+            self._exec("UPDATE videos SET thumbs_tried=1 WHERE id=?", (video_id,))
+
+    def thumbs(self, video_id: int) -> list[bytes]:
+        return [bytes(r["jpeg"]) for r in
+                self._query("SELECT jpeg FROM thumbs WHERE video_id=? ORDER BY idx", (video_id,))]
 
     def set_keep(self, video_id: int, keep_id: int | None) -> None:
         self._exec("UPDATE videos SET keep_id=? WHERE id=?", (keep_id, video_id))
@@ -450,6 +473,7 @@ class LibraryDB:
 
     def delete_video(self, video_id: int) -> None:
         self._exec("DELETE FROM videos WHERE id=?", (video_id,))
+        self._exec("DELETE FROM thumbs WHERE video_id=?", (video_id,))
 
     # ---- 이어보기 ----
     def save_position(self, path: str, position: float, duration: float | None) -> None:

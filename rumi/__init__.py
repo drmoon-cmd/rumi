@@ -1,4 +1,4 @@
 """Rumi - mpv 기반 동영상 플레이어."""
 
-__version__ = "0.3.17"
+__version__ = "0.3.18"
 APP_NAME = "Rumi"
