@@ -61,6 +61,25 @@ QTabBar::tab {{ background: transparent; color: {dim}; padding: 7px 14px; border
 QTabBar::tab:selected {{ color: {text}; border-bottom: 2px solid {accent}; }}
 QTabBar::tab:hover {{ color: {text}; }}
 
+/* 재생목록 탭 줄: 고른 탭은 바탕색으로 또렷하게, 좌우 이동 단추는 누르기 쉽게 크게 */
+#playlistTabs QTabBar::tab {{ background: transparent; color: {dim}; padding: 6px 12px; margin: 3px 2px 3px 0;
+    border: 1px solid transparent; border-radius: 6px; min-width: 40px; }}
+#playlistTabs QTabBar::tab:selected {{ background: {raised}; color: {text}; border: 1px solid {border};
+    border-bottom: 2px solid {accent}; font-weight: bold; }}
+#playlistTabs QTabBar::tab:hover:!selected {{ background: {hover}; color: {text}; }}
+#playlistTabs QTabBar::tear {{ width: 0; border: none; image: none; }}
+#playlistTabs QTabBar::scroller {{ width: 0; }}
+#playlistTabs QTabBar QToolButton {{ width: 0; border: none; }}
+#playlistTabs QTabWidget::pane, QTabWidget#playlistTabs::pane {{ border: none; top: 0; }}
+#tabStrip QToolButton {{ color: {text}; background: {raised}; border: 1px solid {border}; border-radius: 6px;
+    padding: 3px 0; min-width: 23px; min-height: 22px; font-size: 13px; }}
+#tabStrip QToolButton:hover {{ background: {hover}; }}
+#tabStrip QToolButton:disabled {{ color: {border}; background: transparent; }}
+#tabStrip QToolButton::menu-indicator {{ image: none; width: 0; }}
+#tabClose {{ color: {dim}; background: transparent; border: none; border-radius: 8px; padding: 0;
+    min-width: 16px; max-width: 16px; min-height: 16px; max-height: 16px; font-size: 13px; }}
+#tabClose:hover {{ background: {hover}; color: {text}; }}
+
 /* 입력 */
 QPushButton {{ background: {raised}; color: {text}; border: 1px solid {border}; border-radius: 6px; padding: 6px 12px; }}
 QPushButton:hover {{ background: {hover}; }}

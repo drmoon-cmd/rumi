@@ -13,6 +13,7 @@ Windows, macOS, Linux에서 동작합니다 (Python + Qt(PySide6) + libmpv).
 - **전체화면**: 화면만 보이고, 위쪽에 마우스를 대면 제목·메뉴, 아래쪽에 대면 재생 컨트롤이 나타남.
   영상 위 오른쪽 클릭으로 전체 메뉴
 - **재생목록 탭**: 여러 목록을 탭으로 관리 (＋로 추가, 더블클릭으로 이름 바꾸기, 끌어서 순서 변경, 종료 후에도 유지)
+  탭이 많으면 탭 줄 오른쪽의 ◀ ▶ 로 넘기거나(Ctrl+Tab / Ctrl+Shift+Tab, 탭 줄에서 마우스 휠), ▾ 로 모든 탭을 세로 목록으로 보고 바로 갑니다.
   닫기(×)는 보고 있는 탭에만 있고, 닫은 탭은 Ctrl+Shift+T 로 되돌립니다. 오른쪽 클릭 → '탭 고정'으로 닫힘·비워짐을 막습니다.
 - **오른쪽 끝 재생목록**: 전체화면이거나 재생목록 패널을 닫아 둔 때, 마우스를 화면 오른쪽 끝에 대면 목록이 영상 위에 나타나고
   벗어나면 숨습니다 (전체화면에서 F9 를 누르면 계속 띄워 둠). 화면 → 패널 배치에서 끄기, 패널 위치 잠금, 창 배치 초기화.
@@ -150,13 +151,13 @@ pytest            # 라이브러리/중복 정리 로직 테스트
 
 | OS | 명령 | 결과 |
 |---|---|---|
-| Windows | `python packaging/build.py` 다음 `iscc packaging\windows\rumi.iss` | `dist/RumiSetup-0.3.13.exe` (시작 메뉴, 파일 연결 선택) |
+| Windows | `python packaging/build.py` 다음 `iscc packaging\windows\rumi.iss` | `dist/RumiSetup-0.3.14.exe` (시작 메뉴, 파일 연결 선택) |
 | macOS | `python packaging/build.py` | `dist/Rumi.app` |
 | Linux | `python packaging/build.py` | `dist/Rumi/Rumi` |
 
 Windows에서는 `libmpv-2.dll`을 `packaging/windows/` 아래 아무 곳에 두거나, `RUMI_LIBMPV` 환경 변수로 경로를 지정하세요.
 
-각 OS에서 직접 빌드하지 않아도 됩니다. GitHub의 **Actions → build → Run workflow**를 실행하면(또는 `v0.3.13` 같은 태그를 푸시하면) 세 OS용 설치 파일이 한 번에 만들어집니다.
+각 OS에서 직접 빌드하지 않아도 됩니다. GitHub의 **Actions → build → Run workflow**를 실행하면(또는 `v0.3.14` 같은 태그를 푸시하면) 세 OS용 설치 파일이 한 번에 만들어집니다.
 
 ## 데이터 위치
 

@@ -19,6 +19,7 @@ from ..playlist_io import PLAYLIST_EXTENSIONS, load_playlist, save_m3u
 from .util import fmt_size, natural_key, reveal_in_file_manager
 
 DEFAULT_TAB_NAME = "재생목록"
+TAB_NAME_MAX = 14   # 탭에 보이는 이름 길이 (더 길면 줄이고, 전체 이름은 마우스를 올리면 보인다)
 
 
 class RepeatMode(str, Enum):
@@ -261,22 +262,51 @@ class PlaylistPanel(QWidget):
     def __init__(self, parent=None):
         super().__init__(parent)
         self.tabs = QTabWidget()
+        self.tabs.setObjectName("playlistTabs")
         self.tabs.setDocumentMode(True)
         self.tabs.setMovable(True)
-        self.tabs.setTabsClosable(True)
-        self.tabs.setElideMode(Qt.ElideRight)
-        self.tabs.tabCloseRequested.connect(self.close_tab)
+        self.tabs.setElideMode(Qt.ElideNone)      # 이름을 '블랙…'처럼 자르지 않는다 (넘치면 좌우로 넘긴다)
+        self.tabs.setUsesScrollButtons(True)
         self.tabs.tabBarDoubleClicked.connect(self._on_tab_double_clicked)
         bar = self.tabs.tabBar()
+        bar.setDrawBase(False)
+        bar.setExpanding(False)
         bar.setContextMenuPolicy(Qt.CustomContextMenu)
         bar.customContextMenuRequested.connect(self._tab_menu)
-        add = QToolButton()
-        add.setText("＋")
-        add.setToolTip("새 재생목록 탭")
-        add.setAutoRaise(True)
-        add.setFocusPolicy(Qt.NoFocus)
-        add.clicked.connect(lambda: self.new_tab())
-        self.tabs.setCornerWidget(add, Qt.TopRightCorner)
+        # 닫기(×)는 하나만 만들어 보고 있는 탭에 붙인다
+        self._close_btn = QToolButton()
+        self._close_btn.setObjectName("tabClose")
+        self._close_btn.setText("✕")
+        self._close_btn.setToolTip("이 탭 닫기 (Ctrl+Shift+T 로 되돌리기)")
+        self._close_btn.setFocusPolicy(Qt.NoFocus)
+        self._close_btn.clicked.connect(lambda: self.close_tab(self.tabs.currentIndex()))
+
+        # 탭 줄 오른쪽: ◀ ▶ (탭이 넘칠 때 이동) · ▾ (모든 탭 목록) · ＋ (새 탭)
+        def strip_button(text, tip, slot=None):
+            b = QToolButton()
+            b.setText(text)
+            b.setToolTip(tip)
+            b.setFocusPolicy(Qt.NoFocus)
+            if slot:
+                b.clicked.connect(slot)
+            return b
+
+        self.tab_prev_btn = strip_button("◀", "이전 탭 (Ctrl+Shift+Tab)", lambda: self.step_tab(-1))
+        self.tab_next_btn = strip_button("▶", "다음 탭 (Ctrl+Tab)", lambda: self.step_tab(1))
+        self.tab_list_btn = strip_button("▾", "모든 탭 보기 · 바로 가기")
+        self.tab_list_btn.setPopupMode(QToolButton.InstantPopup)
+        tab_menu = QMenu(self.tab_list_btn)
+        tab_menu.aboutToShow.connect(lambda: self._build_tab_list(tab_menu))
+        self.tab_list_btn.setMenu(tab_menu)
+        add = strip_button("＋", "새 재생목록 탭", lambda: self.new_tab())
+        strip = QWidget()
+        strip.setObjectName("tabStrip")
+        strip_lay = QHBoxLayout(strip)
+        strip_lay.setContentsMargins(4, 2, 0, 2)
+        strip_lay.setSpacing(3)
+        for b in (self.tab_prev_btn, self.tab_next_btn, self.tab_list_btn, add):
+            strip_lay.addWidget(b)
+        self.tabs.setCornerWidget(strip, Qt.TopRightCorner)
         self._playing: PlaylistTab | None = None  # 재생 중인 항목이 있는 탭
         self._closed: list[dict] = []             # 닫은 탭 (되돌리기용, 최근 10개)
         self.tabs.currentChanged.connect(lambda _i: self._update_close_buttons())
@@ -394,25 +424,55 @@ class PlaylistPanel(QWidget):
         t.customContextMenuRequested.connect(lambda pos, t=t: self._item_menu(t, pos))
         if paths:
             t.add_files(paths)
-        idx = self.tabs.addTab(t, name)
+        t.name = name
+        idx = self.tabs.addTab(t, self._tab_label(t))
+        self._set_tab_text(idx)
         self.tabs.setCurrentIndex(idx)
         self._update_close_buttons()
         return t
 
     def _tab_label(self, t: PlaylistTab) -> str:
-        return f"📌 {t.name}" if t.pinned else t.name
+        name = t.name if len(t.name) <= TAB_NAME_MAX else t.name[:TAB_NAME_MAX - 1] + "…"
+        return f"📌 {name}" if t.pinned else name
+
+    def _set_tab_text(self, index: int) -> None:
+        t = self.tab(index)
+        self.tabs.setTabText(index, self._tab_label(t))
+        self.tabs.setTabToolTip(index, f"{t.name} · {t.count()}개" + (" · 고정됨" if t.pinned else ""))
+
+    def step_tab(self, step: int) -> None:
+        """이전/다음 탭으로 (끝에서는 반대쪽 끝으로 돈다)."""
+        n = self.tabs.count()
+        if n > 1:
+            self.tabs.setCurrentIndex((self.tabs.currentIndex() + step) % n)
+
+    def _build_tab_list(self, menu: QMenu) -> None:
+        """모든 탭을 세로로 보여 주는 메뉴: 탭이 많아도 한 번에 골라 갈 수 있다."""
+        menu.clear()
+        current = self.tabs.currentIndex()
+        for i, t in enumerate(self.all_tabs()):
+            mark = "📌 " if t.pinned else ""
+            playing = "  ▶" if t is self._playing and t.current_path() else ""
+            a = menu.addAction(f"{mark}{t.name}   ({t.count()}개){playing}",
+                               lambda i=i: self.tabs.setCurrentIndex(i))
+            a.setCheckable(True)
+            a.setChecked(i == current)
+        menu.addSeparator()
+        menu.addAction("새 탭", lambda: self.new_tab())
+        reopen = menu.addAction("닫은 탭 다시 열기\tCtrl+Shift+T", self.reopen_closed_tab)
+        reopen.setEnabled(self.can_reopen_tab())
 
     def rename_tab(self, index: int) -> None:
         t = self.tab(index)
         name, ok = QInputDialog.getText(self, "탭 이름 바꾸기", "이름:", text=t.name)
         if ok and name.strip():
             t.name = name.strip()
-            self.tabs.setTabText(index, self._tab_label(t))
+            self._set_tab_text(index)
 
     def set_pinned(self, index: int, on: bool) -> None:
         t = self.tab(index)
         t.pinned = on
-        self.tabs.setTabText(index, self._tab_label(t))
+        self._set_tab_text(index)
         self._update_close_buttons()
 
     def close_tab(self, index: int) -> None:
@@ -427,6 +487,7 @@ class PlaylistPanel(QWidget):
             del self._closed[:-10]
         if t is self._playing:
             self._playing = None
+        self._detach_close()
         self.tabs.removeTab(index)
         t.deleteLater()
         self._update_close_buttons()
@@ -445,16 +506,32 @@ class PlaylistPanel(QWidget):
         self.tabs.setCurrentWidget(t)
         return True
 
+    def _detach_close(self) -> None:
+        """닫기 버튼을 탭에서 떼어 둔다 (탭을 지우면 붙어 있던 버튼도 함께 지워지기 때문)."""
+        bar = self.tabs.tabBar()
+        for i in range(self.tabs.count()):
+            if bar.tabButton(i, QTabBar.RightSide) is self._close_btn:
+                bar.setTabButton(i, QTabBar.RightSide, None)
+        self._close_btn.setParent(self)
+        self._close_btn.hide()
+
     def _update_close_buttons(self) -> None:
         # 닫기(×) 버튼은 지금 보고 있는 탭에만 둔다: 다른 탭을 고르려다 닫는 실수를 막는다.
-        # 탭이 하나뿐이거나 고정한 탭이면 숨긴다.
-        only = self.tabs.count() <= 1
+        # 탭이 하나뿐이거나 고정한 탭이면 없다.
+        bar = self.tabs.tabBar()
         current = self.tabs.currentIndex()
-        for i in range(self.tabs.count()):
-            for side in (QTabBar.RightSide, QTabBar.LeftSide):
-                btn = self.tabs.tabBar().tabButton(i, side)
-                if btn:
-                    btn.setVisible(not only and i == current and not self.tab(i).pinned)
+        show = self.tabs.count() > 1 and current >= 0 and not self.tab(current).pinned
+        if not show or bar.tabButton(current, QTabBar.RightSide) is not self._close_btn:
+            self._detach_close()
+        if show:
+            if bar.tabButton(current, QTabBar.RightSide) is not self._close_btn:
+                bar.setTabButton(current, QTabBar.RightSide, self._close_btn)
+            self._close_btn.show()
+        many = self.tabs.count() > 1
+        self.tab_prev_btn.setEnabled(many)
+        self.tab_next_btn.setEnabled(many)
+        if current >= 0:
+            self._set_tab_text(current)
 
     def _on_tab_double_clicked(self, index: int) -> None:
         if index >= 0:
@@ -734,6 +811,7 @@ class PlaylistPanel(QWidget):
         if not tabs:
             return
         for t in self.all_tabs():
+            self._detach_close()
             self.tabs.removeTab(0)
             t.deleteLater()
         self._playing = None
