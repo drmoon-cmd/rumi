@@ -37,7 +37,7 @@ jobs:
       - name: ffmpeg 점검 (동영상 합치기·녹화)
         run: python packaging/smoke_ffmpeg.py
       - name: 드라이브 알아보기·장면 지문 점검 (Windows 볼륨 일련번호, 설치판에 넣는 ffmpeg)
-        run: python -m pytest -q tests/test_catalog.py tests/test_library.py
+        run: python -m pytest -q tests/test_catalog.py tests/test_library.py tests/test_netguard.py
       - name: 화질 개선 셰이더 포함 확인
         shell: pwsh
         run: |

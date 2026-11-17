@@ -15,6 +15,7 @@ from PySide6.QtWidgets import (
 )
 
 from ..library.scanner import VIDEO_EXTENSIONS, is_video
+from .. import netguard
 from ..playlist_io import PLAYLIST_EXTENSIONS, load_playlist, save_m3u
 from .util import fmt_size, natural_key, reveal_in_file_manager
 
@@ -309,6 +310,7 @@ class PlaylistPanel(QWidget):
         self.tabs.setCornerWidget(strip, Qt.TopRightCorner)
         self._playing: PlaylistTab | None = None  # 재생 중인 항목이 있는 탭
         self._closed: list[dict] = []             # 닫은 탭 (되돌리기용, 최근 10개)
+        self._local_only = True
         self.tabs.currentChanged.connect(lambda _i: self._update_close_buttons())
         bar.tabMoved.connect(lambda _a, _b: self._update_close_buttons())
 
@@ -671,7 +673,14 @@ class PlaylistPanel(QWidget):
             QSettings().setValue("lastDir", d)
             self.tab().add_files([d])
 
+    def set_local_only(self, on: bool) -> None:
+        self._local_only = on
+
     def add_url_dialog(self) -> None:
+        if self._local_only:
+            QMessageBox.information(self, "URL 추가", "로컬 전용 모드에서는 인터넷 주소를 추가하지 않습니다.\n"
+                                    "(파일 → 로컬 전용 모드에서 끌 수 있습니다)")
+            return
         url, ok = QInputDialog.getText(self, "URL 추가", "스트림 주소 (http, https, rtsp 등):")
         if ok and "://" in url:
             self.tab().add_files([url.strip()])
@@ -689,10 +698,17 @@ class PlaylistPanel(QWidget):
             QMessageBox.warning(self, "재생목록", f"읽지 못했습니다:\n{e}")
             return
         t = self.new_tab(os.path.splitext(os.path.basename(path))[0])
+        remote = [p for p in items if netguard.is_remote(p)] if self._local_only else []
+        items = [p for p in items if p not in remote]
         t.add_files([p for p in items if "://" in p or os.path.exists(p)])
         missing = len(items) - t.count()
+        notes = []
         if missing:
-            QMessageBox.information(self, "재생목록", f"찾을 수 없는 파일 {missing}개는 빼고 불러왔습니다.")
+            notes.append(f"찾을 수 없는 파일 {missing}개는 빼고 불러왔습니다.")
+        if remote:
+            notes.append(f"인터넷 주소 {len(remote)}개는 넣지 않았습니다 (로컬 전용 모드).")
+        if notes:
+            QMessageBox.information(self, "재생목록", "\n".join(notes))
 
     def save_playlist_dialog(self) -> None:
         t = self.tab()

@@ -22,11 +22,11 @@ from ..library.scanner import VIDEO_EXTENSIONS
 from .controls import ControlBar
 from .library_window import LibraryWindow
 from ..subtitles import looks_like_sensor_data
-from .mpv_widget import DEFAULT_HWDEC, HWDEC_MODES, MpvWidget
+from .mpv_widget import DEFAULT_HWDEC, HWDEC_MODES, MpvWidget, apply_local_only_everywhere
 from ..clips import Clip
 from ..dashcam import find_partner
 from ..tools import find_ffmpeg
-from .. import picture
+from .. import netguard, picture
 from .. import vr as vrfmt
 from ..recorder import StreamRecorder
 from ..media_tools import AudioSettings, build_audio_filter
@@ -282,6 +282,8 @@ class MainWindow(QMainWindow):
         self.a_open = A("파일 열기…", self.open_files_dialog, QKeySequence.Open)
         self.a_open_folder = A("폴더 열기…", self.open_folder_dialog, "Ctrl+Shift+O")
         self.a_open_url = A("URL 열기…", self.open_url_dialog, "Ctrl+U")
+        self.a_local_only = A("로컬 전용 모드 (인터넷 접속 차단)", self.toggle_local_only, checkable=True)
+        self.a_local_only.setChecked(True)
         self.a_merge = A("동영상 합치기 (여러 파일을 하나로)…", lambda: self.open_merge_dialog(), "Ctrl+Shift+M")
         self.a_quit = A("끝내기", self.close, QKeySequence.Quit)
 
@@ -401,6 +403,7 @@ class MainWindow(QMainWindow):
 
         m = mb.addMenu("파일(&F)")
         m.addActions([self.a_open, self.a_open_folder, self.a_open_url])
+        m.addAction(self.a_local_only)
         self.recent_menu = m.addMenu("최근 파일")
         self.recent_menu.aboutToShow.connect(self._fill_recent_menu)
         m.addSeparator()
@@ -606,6 +609,7 @@ class MainWindow(QMainWindow):
             self.restoreGeometry(geo)
         else:
             self.resize(1280, 760)
+        self.set_local_only(s.value("localOnly", True, type=bool))
         self.a_lock_layout.setChecked(s.value("layoutLocked", True, type=bool))
         self._apply_layout_lock()
         self.a_edge_list.setChecked(s.value("edgeList", True, type=bool))
@@ -724,6 +728,7 @@ class MainWindow(QMainWindow):
 
     # ------------------------------------------------------------------ 열기
     def open_paths(self, paths: list[str], play: bool = True) -> None:
+        paths = self._refuse_remote(paths)
         subs = [p for p in paths if Path(p).suffix.lower() in SUBTITLE_EXTENSIONS]
         media = [p for p in paths if p not in subs]
         if media:
@@ -735,6 +740,7 @@ class MainWindow(QMainWindow):
             self.add_subtitle(s)
 
     def enqueue(self, paths: list[str]) -> None:
+        paths = self._refuse_remote(paths)
         empty = not self.playlist.paths()
         self.playlist.add_files(paths)
         if empty and self.playlist.paths():
@@ -765,7 +771,40 @@ class MainWindow(QMainWindow):
                 return
         MergeDialog(paths, self).exec()
 
+    def set_local_only(self, on: bool) -> None:
+        netguard.set_local_only(on)
+        apply_local_only_everywhere()
+        self.a_local_only.setChecked(on)
+        self.a_open_url.setEnabled(not on)
+        self.playlist.set_local_only(on)
+        if on and self._recorder is not None:
+            self.stop_record(report=False)  # 인터넷 스트림 저장 중이었다면 멈춘다
+        if on and self._current and netguard.is_remote(self._current):
+            self.stop()
+
+    def toggle_local_only(self) -> None:
+        on = self.a_local_only.isChecked()
+        if not on and QMessageBox.question(
+                self, "로컬 전용 모드 끄기",
+                "로컬 전용 모드를 끄면 인터넷 주소(URL)를 열거나 저장할 수 있게 됩니다.\n"
+                "그때는 그 주소의 서버에 접속하고, 주소가 적힌 재생목록 파일을 열어도 접속합니다.\n\n끌까요?"
+        ) != QMessageBox.Yes:
+            on = True
+        self.set_local_only(on)
+        self.settings.setValue("localOnly", on)
+        self.osd("로컬 전용 모드: " + ("켬 (인터넷 접속 차단)" if on else "끔"))
+
+    def _refuse_remote(self, paths: list[str]) -> list[str]:
+        """로컬 전용 모드에서 인터넷 주소를 걸러 낸다 (걸렀으면 알려 준다)."""
+        kept = [p for p in paths if not netguard.blocked(p)]
+        if len(kept) != len(paths):
+            self.osd("로컬 전용 모드: 인터넷 주소는 열지 않습니다 (파일 메뉴에서 끌 수 있음)")
+        return kept
+
     def open_url_dialog(self) -> None:
+        if netguard.local_only():
+            self.osd("로컬 전용 모드: 인터넷 주소는 열지 않습니다 (파일 메뉴에서 끌 수 있음)")
+            return
         url, ok = QInputDialog.getText(self, "URL 열기", "스트림 주소 (http, https, rtsp 등):")
         if ok and url.strip():
             self.open_paths([url.strip()])
@@ -782,6 +821,9 @@ class MainWindow(QMainWindow):
     # ------------------------------------------------------------------ 재생
     def play(self, path: str, start: float | None = None) -> None:
         """파일 재생. start 를 주면 이어보기 대신 그 위치부터 재생한다."""
+        if netguard.blocked(path):
+            self.osd("로컬 전용 모드: 인터넷 주소는 열지 않습니다 (파일 메뉴에서 끌 수 있음)")
+            return
         self._end_clip_mode()
         self.stop_record(local_only=True)  # 인터넷 스트림 저장은 다른 영상을 봐도 계속된다
         self._save_position()
@@ -912,6 +954,8 @@ class MainWindow(QMainWindow):
             os.makedirs(folder, exist_ok=True)
             path = os.path.join(folder, f"{title}_{time.strftime('%Y%m%d_%H%M%S')}.mkv")
             if is_stream:
+                if netguard.local_only():
+                    raise RuntimeError("로컬 전용 모드에서는 인터넷 스트림을 저장하지 않습니다.")
                 ffmpeg = find_ffmpeg()
                 if not ffmpeg:
                     raise RuntimeError("변환 도구(ffmpeg)를 찾지 못했습니다.")

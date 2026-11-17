@@ -10,6 +10,7 @@ import locale
 import os
 import threading
 import time
+import weakref
 from collections import deque
 
 from PySide6.QtCore import QByteArray, Qt, QTimer, Signal
@@ -19,7 +20,7 @@ from PySide6.QtOpenGLWidgets import QOpenGLWidget
 
 import mpv
 
-from .. import picture
+from .. import netguard, picture
 
 # GPU 가속이 없는 환경(가상 머신, 원격 데스크톱, 드라이버 미설치)의 소프트웨어 렌더러.
 # 기본 고품질 스케일러 셰이더가 너무 무거워 영상이 검게 나오므로 가벼운 설정으로 바꾼다.
@@ -47,6 +48,14 @@ def _get_proc_address(_ctx, name: bytes) -> int:
         return 0
     addr = glctx.getProcAddress(QByteArray(name))
     return int(addr) if addr else 0
+
+
+_widgets: "weakref.WeakSet[MpvWidget]" = weakref.WeakSet()   # 만들어진 재생 화면들 (메인·PIP·분할 화면)
+
+
+def apply_local_only_everywhere() -> None:
+    for w in list(_widgets):
+        w.apply_local_only()
 
 
 class MpvWidget(QOpenGLWidget):
@@ -100,6 +109,8 @@ class MpvWidget(QOpenGLWidget):
             log_handler=self._on_log,
             loglevel="warn",
         )
+        _widgets.add(self)
+        self.apply_local_only()
         self._render_ctx: mpv.MpvRenderContext | None = None
         self.software_rendering = False
         self._pending_load: tuple[str, dict] | None = None
@@ -271,9 +282,21 @@ class MpvWidget(QOpenGLWidget):
             },
         )
 
+    def apply_local_only(self) -> None:
+        """로컬 전용 모드: 재생 엔진이 로컬 파일만 읽게 한다 (파일 안에 적힌 인터넷 주소도 열지 못한다)."""
+        guard = netguard.MPV_LAVF_GUARD if netguard.local_only() else ""
+        for name in ("stream-lavf-o", "demuxer-lavf-o"):
+            try:
+                self.player[name] = guard
+            except Exception:
+                pass
+
     def load(self, path: str, **options) -> None:
         """파일 열기. 렌더 컨텍스트가 만들어지기 전에 열면 영상 출력 초기화가 실패하므로,
         위젯이 처음 그려질 때까지 미뤘다가 연다."""
+        if netguard.blocked(path):
+            self.load_failed.emit("로컬 전용 모드에서는 인터넷 주소를 열지 않습니다")
+            return
         if self._render_ctx is None:
             self._pending_load = (path, options)
         else:

@@ -114,6 +114,17 @@ Windows, macOS, Linux에서 동작합니다 (Python + Qt(PySide6) + libmpv).
    삭제 직전에 *남겨 둘 사본이 실제로 있고 내용이 같은지* 파일을 다시 읽어 확인합니다. 마지막 남은 사본은 절대 삭제하지 않습니다.
    확인 창에서 체크박스로 한 번 더 동의해야 삭제됩니다.
 
+## 개인 정보와 인터넷 접속
+
+Rumi 는 사용 통계·오류 보고를 보내지 않고, 업데이트를 확인하지 않으며, 계정이 없습니다.
+라이브러리 기록(드라이브·파일 목록·지문), 이어보기 위치, 설정은 모두 PC 안에만 저장됩니다.
+
+**로컬 전용 모드** (파일 메뉴, 기본으로 켜짐)에서는 어떤 경우에도 인터넷에 접속하지 않습니다.
+- 인터넷 주소(URL) 열기·추가·스트림 저장을 받지 않습니다.
+- 겉은 로컬 파일이지만 안에 인터넷 주소가 적힌 파일(재생목록, HLS 목록, 확장자를 바꾼 목록 파일)을 열어도
+  재생 엔진과 변환 도구가 그 주소로 접속하지 못합니다.
+- 인터넷 스트림을 보거나 저장하려면 이 모드를 끄면 됩니다. 그때는 그 주소의 서버에만 접속합니다.
+
 ## 단축키
 
 | 키 | 동작 | 키 | 동작 |
@@ -151,13 +162,13 @@ pytest            # 라이브러리/중복 정리 로직 테스트
 
 | OS | 명령 | 결과 |
 |---|---|---|
-| Windows | `python packaging/build.py` 다음 `iscc packaging\windows\rumi.iss` | `dist/RumiSetup-0.3.16.exe` (시작 메뉴, 파일 연결 선택) |
+| Windows | `python packaging/build.py` 다음 `iscc packaging\windows\rumi.iss` | `dist/RumiSetup-0.3.17.exe` (시작 메뉴, 파일 연결 선택) |
 | macOS | `python packaging/build.py` | `dist/Rumi.app` |
 | Linux | `python packaging/build.py` | `dist/Rumi/Rumi` |
 
 Windows에서는 `libmpv-2.dll`을 `packaging/windows/` 아래 아무 곳에 두거나, `RUMI_LIBMPV` 환경 변수로 경로를 지정하세요.
 
-각 OS에서 직접 빌드하지 않아도 됩니다. GitHub의 **Actions → build → Run workflow**를 실행하면(또는 `v0.3.16` 같은 태그를 푸시하면) 세 OS용 설치 파일이 한 번에 만들어집니다.
+각 OS에서 직접 빌드하지 않아도 됩니다. GitHub의 **Actions → build → Run workflow**를 실행하면(또는 `v0.3.17` 같은 태그를 푸시하면) 세 OS용 설치 파일이 한 번에 만들어집니다.
 
 ## 데이터 위치
 

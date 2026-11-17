@@ -16,6 +16,7 @@ import subprocess
 from concurrent.futures import ThreadPoolExecutor
 from dataclasses import dataclass
 
+from ..netguard import ffmpeg_input_guard
 from ..tools import find_ffmpeg
 
 VERSION = 1
@@ -56,7 +57,7 @@ def probe(path: str, ffmpeg: str | None = None) -> MediaInfo:
     if not ffmpeg:
         return MediaInfo()
     try:
-        r = subprocess.run([ffmpeg, "-hide_banner", "-nostdin", "-i", path], capture_output=True,
+        r = subprocess.run([ffmpeg, "-hide_banner", "-nostdin", *ffmpeg_input_guard(), "-i", path], capture_output=True,
                            timeout=TIMEOUT_S, creationflags=_NO_WINDOW)
     except (OSError, subprocess.SubprocessError):
         return MediaInfo()
@@ -80,7 +81,7 @@ def dhash(gray: bytes) -> int | None:
 
 
 def _grab_one(ffmpeg: str, path: str, t: float) -> bytes:
-    cmd = [ffmpeg, "-v", "error", "-nostdin", "-ss", f"{t:.3f}", "-i", path, "-map", "0:v:0", "-frames:v", "1",
+    cmd = [ffmpeg, "-v", "error", "-nostdin", *ffmpeg_input_guard(), "-ss", f"{t:.3f}", "-i", path, "-map", "0:v:0", "-frames:v", "1",
            "-vf", f"scale={GRID_W}:{GRID_H}:flags=area,format=gray", "-an", "-sn", "-dn", "-f", "rawvideo", "-"]
     try:
         r = subprocess.run(cmd, capture_output=True, timeout=TIMEOUT_S, creationflags=_NO_WINDOW)

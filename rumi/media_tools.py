@@ -4,6 +4,8 @@ from __future__ import annotations
 
 from dataclasses import dataclass
 
+from .netguard import ffmpeg_input_guard
+
 EQ_PRESETS = {
     "기본": (0, 0),
     "저음 강조": (6, 0),
@@ -40,7 +42,7 @@ def build_audio_filter(s: AudioSettings) -> str:
 
 def build_thumbnail_args(ffmpeg: str, path: str, t: float, width: int = 240) -> list[str]:
     """탐색 바 미리보기: t 초 지점의 한 장면을 PNG 로 표준출력에 쓴다 (빠른 키프레임 탐색)."""
-    return [ffmpeg, "-hide_banner", "-loglevel", "error", "-ss", f"{max(t, 0):.2f}", "-i", path,
+    return [ffmpeg, "-hide_banner", "-loglevel", "error", *ffmpeg_input_guard(), "-ss", f"{max(t, 0):.2f}", "-i", path,
             "-frames:v", "1", "-vf", f"scale={width}:-2", "-f", "image2pipe", "-vcodec", "png", "-"]
 
 
