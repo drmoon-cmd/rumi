@@ -1,11 +1,12 @@
-"""앱 전체 테마 (어둡게/밝게). Fusion 스타일 + 팔레트 + 스타일시트."""
+"""앱 전체 테마 (색 구성 여러 가지). Fusion 스타일 + 팔레트 + 스타일시트."""
 
 from __future__ import annotations
 
 from PySide6.QtGui import QColor, QPalette
 from PySide6.QtWidgets import QApplication, QStyleFactory
 
-THEMES = {"dark": "어둡게", "light": "밝게"}
+THEMES = {"dark": "어둡게", "light": "밝게", "cinema": "시네마 (검정 + 호박색)", "midnight": "미드나이트 (남색 + 청록)",
+          "graphite": "그래파이트 (회색 + 주황)", "violet": "바이올렛 (보라)", "paper": "페이퍼 (따뜻한 밝은색)"}
 DEFAULT_THEME = "dark"
 
 _COLORS = {
@@ -13,6 +14,17 @@ _COLORS = {
                  dim="#9a9ea6", accent="#3d8fe0", accent_text="#ffffff", hover="#353940", danger="#e5534b"),
     "light": dict(bg="#f4f5f7", panel="#ffffff", raised="#ffffff", border="#d5d8dd", text="#1f2328",
                   dim="#656d76", accent="#2f7bd3", accent_text="#ffffff", hover="#e8ecf1", danger="#cf222e"),
+    # 영화관처럼 새까만 바탕: 영상에 시선이 가도록 테두리와 강조색을 절제했다
+    "cinema": dict(bg="#000000", panel="#0c0c0d", raised="#17181a", border="#2a2b2e", text="#e9e6df",
+                   dim="#8f8a80", accent="#e0a23a", accent_text="#141005", hover="#222326", danger="#e5534b"),
+    "midnight": dict(bg="#0f1524", panel="#151c2e", raised="#1c2540", border="#2b3655", text="#dfe6f5",
+                     dim="#8b97b5", accent="#2fc4b2", accent_text="#04201c", hover="#243052", danger="#ff6b6b"),
+    "graphite": dict(bg="#2a2a2a", panel="#323232", raised="#3c3c3c", border="#4a4a4a", text="#ededed",
+                     dim="#a6a6a6", accent="#f08a24", accent_text="#1c1004", hover="#464646", danger="#ef5350"),
+    "violet": dict(bg="#191622", panel="#211d2e", raised="#2a2540", border="#3b3556", text="#ebe7f7",
+                   dim="#9d95b8", accent="#9a7bf0", accent_text="#ffffff", hover="#332d4d", danger="#f0637a"),
+    "paper": dict(bg="#f3efe6", panel="#fbf8f1", raised="#fffdf8", border="#ddd5c3", text="#2b2620",
+                  dim="#7a7062", accent="#b5622a", accent_text="#ffffff", hover="#ebe4d5", danger="#b3261e"),
 }
 
 _QSS = """
