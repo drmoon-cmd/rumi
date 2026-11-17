@@ -44,26 +44,29 @@ def scan_folder(db: LibraryDB, folder_id: int, progress: ProgressFn | None = Non
     if root is None or not os.path.isdir(root):
         return result
 
+    where, known = db.scan_snapshot(folder_id)
     seen: set[str] = set()
     for dirpath, dirnames, filenames in os.walk(root):
         dirnames[:] = [d for d in dirnames if d != QUARANTINE_DIRNAME and not d.startswith(".")
                        and not (dirpath == root and d.lower() in SKIP_DIRS)]
-        for name in filenames:
-            if cancel and cancel():
-                result.cancelled = True
-                return result
-            if not is_video(name):
-                continue
-            full = os.path.join(dirpath, name)
-            try:
-                st = os.stat(full)
-            except OSError:
-                continue
-            db.upsert_video(full, folder_id, st.st_size, st.st_mtime)
-            seen.add(full)
-            result.found += 1
-            if progress:
-                progress(result.found, full)
+        with db.batch():  # 폴더 하나씩 묶어 저장
+            for name in filenames:
+                if cancel and cancel():
+                    result.cancelled = True
+                    return result
+                if not is_video(name):
+                    continue
+                full = os.path.join(dirpath, name)
+                try:
+                    st = os.stat(full)
+                except OSError:
+                    continue
+                if known.get(full) != (st.st_size, st.st_mtime):  # 새 파일이거나 바뀐 파일만 적는다
+                    db.upsert_video(full, folder_id, st.st_size, st.st_mtime, where)
+                seen.add(full)
+                result.found += 1
+                if progress and (result.found % 50 == 0 or result.found < 50):
+                    progress(result.found, full)
 
     # 사라진 파일 정리 (표시/격리된 항목은 기록 보존)
     for v in db.videos([VideoStatus.ACTIVE], folder_id=folder_id):

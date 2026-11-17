@@ -5,12 +5,12 @@ from __future__ import annotations
 import os
 import time
 
-from PySide6.QtCore import Qt, Signal
+from PySide6.QtCore import QAbstractTableModel, QModelIndex, Qt, Signal
 from PySide6.QtGui import QBrush, QColor
 from PySide6.QtWidgets import (
     QAbstractItemView, QCheckBox, QDialog, QDialogButtonBox, QFileDialog, QHBoxLayout,
     QHeaderView, QInputDialog, QLabel, QLineEdit, QListWidget, QListWidgetItem, QMenu, QMessageBox,
-    QPushButton, QSplitter, QTableWidget, QTableWidgetItem, QTabWidget, QTreeWidget,
+    QPushButton, QSplitter, QTableView, QTableWidget, QTableWidgetItem, QTabWidget, QTreeWidget,
     QTreeWidgetItem, QVBoxLayout, QWidget,
 )
 
@@ -125,9 +125,89 @@ class DriveDialog(QDialog):
         return [it.data(ID_ROLE) for it in items if it.checkState() == Qt.Checked]
 
 
-def _selected_ids(table: QTableWidget) -> list[int]:
+def _selected_ids(table) -> list[int]:
     rows = sorted({i.row() for i in table.selectedIndexes()})
+    if isinstance(table, QTableView) and not isinstance(table, QTableWidget):
+        return [table.model().video_id(r) for r in rows]
     return [table.item(r, 0).data(ID_ROLE) for r in rows]
+
+
+class VideoModel(QAbstractTableModel):
+    """동영상 목록. 파일이 수만~수십만 개여도 창이 바로 뜨도록, 보이는 줄만 그때그때 만들어 준다
+    (칸마다 위젯 항목을 미리 만들어 두는 방식은 3만 개에 4초가 걸렸다). 찾기와 정렬도 여기서 한다."""
+
+    HEADERS = ["이름", "드라이브", "폴더", "크기", "길이", "해상도", "수정일"]
+
+    def __init__(self, parent=None):
+        super().__init__(parent)
+        self._rows: list[tuple] = []     # (video, 드라이브 이름, 연결됨, 찾기용 소문자 글)
+        self._shown: list[int] = []      # 찾기·정렬을 거쳐 화면에 보이는 줄 → _rows 번호
+        self._words: list[str] = []
+        self._sort = (0, Qt.AscendingOrder)
+
+    def set_videos(self, rows: list[tuple]) -> None:
+        self.beginResetModel()
+        self._rows = rows
+        self._rebuild()
+        self.endResetModel()
+
+    def set_filter(self, text: str) -> None:
+        words = text.strip().lower().split()
+        if words != self._words:
+            self.beginResetModel()
+            self._words = words
+            self._rebuild()
+            self.endResetModel()
+
+    def sort(self, column: int, order=Qt.AscendingOrder) -> None:
+        self.beginResetModel()
+        self._sort = (column, order)
+        self._rebuild()
+        self.endResetModel()
+
+    def _sort_key(self, column: int):
+        rows = self._rows
+        keys = {0: lambda i: rows[i][0].name.lower(), 1: lambda i: rows[i][1].lower(),
+                2: lambda i: rows[i][0].folder.lower(), 3: lambda i: rows[i][0].size,
+                4: lambda i: rows[i][0].duration or 0,
+                5: lambda i: (rows[i][0].width or 0) * (rows[i][0].height or 0), 6: lambda i: rows[i][0].mtime}
+        return keys[column]
+
+    def _rebuild(self) -> None:
+        words, rows = self._words, self._rows
+        shown = [i for i, r in enumerate(rows) if all(w in r[3] for w in words)] if words else list(range(len(rows)))
+        column, order = self._sort
+        shown.sort(key=self._sort_key(column), reverse=order == Qt.DescendingOrder)
+        self._shown = shown
+
+    def video_id(self, row: int) -> int:
+        return self._rows[self._shown[row]][0].id
+
+    def rowCount(self, parent=QModelIndex()) -> int:
+        return 0 if parent.isValid() else len(self._shown)
+
+    def columnCount(self, parent=QModelIndex()) -> int:
+        return 0 if parent.isValid() else len(self.HEADERS)
+
+    def headerData(self, section, orientation, role=Qt.DisplayRole):
+        if role == Qt.DisplayRole and orientation == Qt.Horizontal:
+            return self.HEADERS[section]
+        return None
+
+    def data(self, index, role=Qt.DisplayRole):
+        if not index.isValid():
+            return None
+        v, drive, online, _hay = self._rows[self._shown[index.row()]]
+        c = index.column()
+        if role in (Qt.DisplayRole, Qt.ToolTipRole):
+            text = (v.name, drive, v.folder, fmt_size(v.size), fmt_time(v.duration) if v.duration else "",
+                    _resolution(v), fmt_date(v.mtime))[c]
+            if role == Qt.ToolTipRole:
+                return text if online else f"{text}  ({OFFLINE_LABEL})"
+            return text
+        if role == Qt.ForegroundRole and not online:
+            return QBrush(OFFLINE_COLOR)
+        return None
 
 
 def _report_errors(parent: QWidget, title: str, res: OpResult) -> None:
@@ -277,12 +357,24 @@ class LibraryWindow(QWidget):
         self.filter.setPlaceholderText("이름·폴더로 찾기 (뽑아 둔 드라이브의 파일도 찾습니다)…")
         self.filter.textChanged.connect(self._apply_filter)
         self.videos_summary = QLabel()
-        self.videos = _table(["이름", "드라이브", "폴더", "크기", "길이", "해상도", "수정일"])
+        self.video_model = VideoModel(self)
+        self.videos = QTableView()
+        self.videos.setModel(self.video_model)
+        self.videos.setSelectionBehavior(QAbstractItemView.SelectRows)
+        self.videos.setSelectionMode(QAbstractItemView.ExtendedSelection)
+        self.videos.verticalHeader().setVisible(False)
+        self.videos.verticalHeader().setDefaultSectionSize(26)
+        self.videos.setAlternatingRowColors(True)
+        self.videos.setTextElideMode(Qt.ElideMiddle)
+        self.videos.setWordWrap(False)
+        self.videos.setShowGrid(False)
+        self.videos.setSortingEnabled(True)
+        self.videos.sortByColumn(0, Qt.AscendingOrder)
         vh = self.videos.horizontalHeader()
-        vh.setSectionResizeMode(0, QHeaderView.Interactive)
-        vh.setSectionResizeMode(2, QHeaderView.Stretch)
-        vh.resizeSection(0, 320)
-        self.videos.itemDoubleClicked.connect(lambda it: self._play_rows(self.videos))
+        vh.setSectionResizeMode(2, QHeaderView.Stretch)   # 칸 너비를 내용에 맞추지 않는다 (모든 줄을 재야 해서 느리다)
+        for col, width in ((0, 260), (1, 150), (3, 76), (4, 64), (5, 84), (6, 122)):
+            vh.resizeSection(col, width)
+        self.videos.doubleClicked.connect(lambda _i: self._play_rows(self.videos))
         self.videos.setContextMenuPolicy(Qt.CustomContextMenu)
         self.videos.customContextMenuRequested.connect(lambda p: self._row_menu(self.videos, p))
         top = QHBoxLayout()
@@ -296,32 +388,19 @@ class LibraryWindow(QWidget):
 
     def _fill_videos(self) -> None:
         vids = self.db.videos([VideoStatus.ACTIVE])
-        t = self.videos
-        t.setSortingEnabled(False)
-        t.setRowCount(0)
-        t.setRowCount(len(vids))
-        offline = 0
-        for r, v in enumerate(vids):
+        rows, offline = [], 0
+        for v in vids:
             on = self._online(v)
             offline += not on
-            cells = [_cell(v.name, v.name.lower(), v.id), _cell(self._drive_name(v)), _cell(v.folder),
-                     _cell(fmt_size(v.size), v.size), _cell(fmt_time(v.duration) if v.duration else "", v.duration or 0),
-                     _cell(_resolution(v), (v.width or 0) * (v.height or 0)), _cell(fmt_date(v.mtime), v.mtime)]
-            for c, cell in enumerate(cells):
-                if not on:
-                    cell.setForeground(QBrush(OFFLINE_COLOR))
-                    cell.setToolTip(f"{cell.text()}  ({OFFLINE_LABEL})")
-                t.setItem(r, c, cell)
-        t.setSortingEnabled(True)
+            drive = self._drive_name(v)
+            rows.append((v, drive, on, f"{v.name} {drive} {v.folder}".lower()))
+        self.video_model.set_videos(rows)
         self.videos_summary.setText(f"{len(vids)}개 · {fmt_size(sum(v.size for v in vids))}"
                                     + (f" (연결 안 된 드라이브 {offline}개 포함)" if offline else ""))
         self._apply_filter(self.filter.text())
 
     def _apply_filter(self, text: str) -> None:
-        words = text.strip().lower().split()
-        for r in range(self.videos.rowCount()):
-            hay = " ".join(self.videos.item(r, c).text().lower() for c in (0, 1, 2))
-            self.videos.setRowHidden(r, any(w not in hay for w in words))
+        self.video_model.set_filter(text)
 
     def _online(self, v) -> bool:
         volume = self._volumes.get(v.volume_id) if v.volume_id is not None else None
@@ -343,12 +422,12 @@ class LibraryWindow(QWidget):
                 + "\n".join(f"• {n}" for n in names[:10]) + "\n\n드라이브를 연결하면 자동으로 알아봅니다.")
         return [v.path for v in vids if v not in away]
 
-    def _play_rows(self, table: QTableWidget) -> None:
+    def _play_rows(self, table) -> None:
         paths = self._paths_of(_selected_ids(table))
         if paths:
             self.play_files.emit(paths)
 
-    def _row_menu(self, table: QTableWidget, pos) -> None:
+    def _row_menu(self, table, pos) -> None:
         ids = _selected_ids(table)
         if not ids:
             return

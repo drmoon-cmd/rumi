@@ -8,6 +8,7 @@
 from __future__ import annotations
 
 import hashlib
+import math
 import os
 from collections import defaultdict
 from dataclasses import dataclass, field
@@ -190,20 +191,32 @@ def find_duplicates(db: LibraryDB, progress: ProgressFn | None = None,
 
     # 3단계: 장면 지문
     if similar:
+        # 빠른 거르기: 장면 값 10개를 큰 수 하나로 이어 붙여 한 번에 비교한다. 같은 영상이면 다른 칸의 합이
+        # 일정 수(limit)를 넘을 수 없으므로, 넘는 쌍은 장면별로 따져 볼 필요가 없다 (대부분이 여기서 걸러진다).
+        need = math.ceil(fp.FRAMES * fp.MATCH_RATIO)
+        limit = need * fp.MAX_DISTANCE + (fp.FRAMES - need) * 64
         marks = []
         for v in videos:
             hashes = fp.decode(v.fingerprint) if v.duration else None
             if hashes and sum(h is not None for h in hashes) >= fp.MIN_FRAMES:
-                marks.append((v.duration, v.id, hashes))
+                packed = 0
+                for h in hashes:
+                    packed = (packed << 64) | (h or 0)
+                blank = sum(h is None for h in hashes)
+                marks.append((v.duration, v.id, hashes, packed, limit + 64 * blank))
         marks.sort(key=lambda m: m[0])
-        for i, (d1, id1, h1) in enumerate(marks):
+        tolerance = fp.DURATION_TOLERANCE
+        for i, (d1, id1, h1, p1, lim1) in enumerate(marks):
             if i % 200 == 0:
                 check_cancel()
                 if progress:
                     progress("장면 비교", i + 1, len(marks))
-            for d2, id2, h2 in marks[i + 1:]:
-                if d2 - d1 > fp.DURATION_TOLERANCE:
+            for j in range(i + 1, len(marks)):
+                d2, id2, h2, p2, lim2 = marks[j]
+                if d2 - d1 > tolerance:
                     break
+                if (p1 ^ p2).bit_count() > lim1 + lim2 - limit:
+                    continue
                 if sets.find(id1) != sets.find(id2) and fp.matches(h1, h2):
                     sets.union(id1, id2)
 

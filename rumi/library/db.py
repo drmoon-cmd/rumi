@@ -6,6 +6,7 @@ import os
 import sqlite3
 import threading
 import time
+from contextlib import contextmanager
 from dataclasses import dataclass
 from enum import Enum
 from pathlib import Path
@@ -166,6 +167,7 @@ class LibraryDB:
         self._conn.execute("CREATE INDEX IF NOT EXISTS idx_videos_volume ON videos(volume_id)")
         self._conn.commit()
         self._lock = threading.RLock()
+        self._batch = 0
         self._mounts: dict[str, vol.Mount] = {}   # 지금 연결된 드라이브 (고유 번호 → 위치)
 
     def close(self) -> None:
@@ -173,8 +175,24 @@ class LibraryDB:
             self._conn.close()
 
     def _exec(self, sql: str, params: Iterable = ()) -> sqlite3.Cursor:
-        with self._lock, self._conn:
-            return self._conn.execute(sql, tuple(params))
+        with self._lock:
+            if self._batch:
+                return self._conn.execute(sql, tuple(params))
+            with self._conn:
+                return self._conn.execute(sql, tuple(params))
+
+    @contextmanager
+    def batch(self):
+        """여러 변경을 한 번에 저장한다 (파일마다 디스크에 쓰지 않도록). 짧게 묶어 쓸 것:
+        묶는 동안 다른 스레드(화면)는 저장소를 쓰지 못하고 기다린다."""
+        with self._lock:
+            self._batch += 1
+            try:
+                yield
+            finally:
+                self._batch -= 1
+                if not self._batch:
+                    self._conn.commit()
 
     def _query(self, sql: str, params: Iterable = ()) -> list[sqlite3.Row]:
         with self._lock:
@@ -322,10 +340,24 @@ class LibraryDB:
         self._exec("UPDATE folders SET scanned_at=? WHERE id=?", (time.time(), folder_id))
 
     # ---- 동영상 ----
-    def upsert_video(self, path: str, folder_id: int | None, size: int, mtime: float) -> int:
-        """새 파일이면 추가, 크기/수정시각이 바뀌었으면 해시를 초기화."""
+    def scan_snapshot(self, folder_id: int) -> tuple[tuple[int, str] | None, dict[str, tuple[int, float]]]:
+        """스캔을 빠르게 하기 위한 준비물: (드라이브 id, 연결 위치), 이 폴더의 {경로: (크기, 수정시각)}.
+        드라이브 정보까지 제대로 적힌 파일만 넣는다 (그런 파일이 바뀌지 않았으면 스캔 때 건드릴 필요가 없다)."""
+        v = self.folder_volume(folder_id)
+        where = (v.id, v.mount) if v is not None and v.mount else None
+        rows = self._query("SELECT path, size, mtime FROM videos WHERE folder_id=? AND "
+                           + ("volume_id=? AND rel_path IS NOT NULL" if where else "volume_id IS NULL"),
+                           (folder_id, where[0]) if where else (folder_id,))
+        return where, {r["path"]: (r["size"], r["mtime"]) for r in rows}
+
+    def upsert_video(self, path: str, folder_id: int | None, size: int, mtime: float,
+                     where: tuple[int, str] | None = None) -> int:
+        """새 파일이면 추가, 크기/수정시각이 바뀌었으면 해시를 초기화.
+        where: scan_snapshot 이 준 (드라이브 id, 연결 위치) — 주면 파일마다 다시 찾지 않는다."""
         volume_id = rel = None
-        if folder_id is not None:
+        if where is not None:
+            volume_id, rel = where[0], vol.relative_to_root(path, where[1])
+        elif folder_id is not None:
             f = self._query("SELECT volume_id FROM folders WHERE id=?", (folder_id,))
             v = self.volume(f[0]["volume_id"]) if f else None
             if v is not None and v.mount:

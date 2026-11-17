@@ -126,12 +126,26 @@ def fingerprint(path: str, duration: float, ffmpeg: str | None = None) -> str | 
 
 
 def matches(a: list[int | None], b: list[int | None]) -> bool:
-    """두 지문이 같은 영상의 것인가."""
-    pairs = [(x, y) for x, y in zip(a, b) if x is not None and y is not None]
-    if len(pairs) < MIN_FRAMES:
+    """두 지문이 같은 영상의 것인가.
+
+    다른 영상은 대개 앞의 장면 몇 개에서 이미 어긋나므로, 더 볼 필요가 없어지면 바로 그만둔다
+    (파일이 수만 개일 때 비교 횟수가 수천만 번이 된다)."""
+    usable_count = 0
+    for x, y in zip(a, b):
+        if x is not None and y is not None:
+            usable_count += 1
+    if usable_count < MIN_FRAMES:
         return False
-    close = sum((x ^ y).bit_count() <= MAX_DISTANCE for x, y in pairs)
-    return close >= math.ceil(len(pairs) * MATCH_RATIO)
+    need = math.ceil(usable_count * MATCH_RATIO)
+    may_miss = usable_count - need
+    for x, y in zip(a, b):
+        if x is None or y is None:
+            continue
+        if (x ^ y).bit_count() > MAX_DISTANCE:
+            may_miss -= 1
+            if may_miss < 0:
+                return False
+    return True
 
 
 def same_length(d1: float, d2: float) -> bool:
